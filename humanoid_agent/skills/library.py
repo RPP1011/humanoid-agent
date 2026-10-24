@@ -373,7 +373,9 @@ class SkillLibrary:
         landed = self._support_of(env.object_pos(obj))
         if landed != surface:
             return SkillResult(False, f"placement: {obj} ended up on {landed}", rel.data)
-        return SkillResult(True, data={"placed": obj, "on": surface, "arm_retracted": ret.success})
+        return SkillResult(True, data={"placed": obj, "on": surface,
+                                       "pos": [round(float(v), 3) for v in env.object_pos(obj)],
+                                       "arm_retracted": ret.success})
 
     # ================================================================ helpers
     BODY_RADIUS = 0.10  # base keep-out around table footprints (m)

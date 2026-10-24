@@ -54,7 +54,8 @@ TOOLS: list[ToolSpec] = [
     ToolSpec("pick", "Pick up an object within arm's reach (stand at the table first). Side auto-chosen if omitted.",
              {"obj": {"type": "string"}, "side": SIDE}, ["obj"],
              lambda L, obj, side=None: L.pick(obj, side)),
-    ToolSpec("place_on", "Place a held object on a table in a free spot in front of the robot. Stand at the table first. "
+    ToolSpec("place_on", "Place a held object on a table, automatically choosing a spot clear of other objects near the "
+                         "robot (side-steps if needed). Stand at the table first. "
                          "Name the object with obj (required if both hands are full). "
                          "dx/dy shift the spot forward/left in metres.",
              {"surface": {"type": "string"}, "obj": {"type": "string", "description": "held object to place"},
