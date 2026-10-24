@@ -36,7 +36,8 @@ TOOLS: list[ToolSpec] = [
     ToolSpec("get_state", "Robot base pose (x, y metres; yaw radians), what each hand holds, sim time.",
              {}, [], lambda L: L.get_state()),
     ToolSpec("list_objects", "All objects with world position, what they rest on (a table, the bean bag, another "
-                             "object, floor), tilt from upright in degrees, distance from robot, and holder.",
+                             "object, floor), tilt from upright in degrees, distance from robot, and holder; plus the "
+                             "surfaces things can be placed on (tables, bean bag).",
              {}, [], lambda L: L.list_objects()),
     ToolSpec("list_locations", "Named places the robot can go to with go_to_location.",
              {}, [], lambda L: L.list_locations()),

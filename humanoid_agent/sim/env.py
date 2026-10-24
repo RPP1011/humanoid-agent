@@ -197,6 +197,9 @@ class HumanoidEnv:
                         owner = self._support_name.get(int(gid[0]), "unknown")
         return top, owner
 
+    def support_of_point(self, x: float, y: float, z: float) -> str:
+        return self.surface_below(x, y, z + 0.01)[1]
+
     def support_of(self, name: str) -> str:
         """What an object rests on: a table, bag or object name, 'floor', 'air' or 'held'."""
         if name in self.attached:

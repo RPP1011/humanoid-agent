@@ -33,7 +33,7 @@ pip install -e ".[dev]"                      # add ,anthropic / ,openai / ,polic
 # Rendering backend MUST work before anything imports sim/env.py.
 #   GPU: MUJOCO_GL=egl (env.py defaults to this if unset)
 #   CPU: MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa   (apt: libosmesa6)
-MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa pytest -q            # 9 tests, ~35 s
+MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa pytest -q            # 19 tests, ~60 s
 python -m humanoid_agent.eval.runner --agent scripted --seeds 5  # harness check
 python -m humanoid_agent.server.mcp_server                        # MCP over stdio
 ```
@@ -56,7 +56,8 @@ code: switch to osmesa and install `libosmesa6`.
 4. **Success is judged on sim state, not on what the agent says.** Only query
    and refusal tasks read `finish(answer)`, and they also require nothing moved.
 5. **Placeholders are labelled, keep them labelled.** Locomotion
-   (`KinematicGlide`) and grasping (`env.attach`) are faked. `is_physical=False`
+   (`KinematicGlide`) and grasping (`env.attach`) are faked; the bean bag is an
+   approximation (sprung cell bed, not a deformable). `is_physical=False`
    flows into every eval row and summary. Any new fake must do the same.
 6. **The LLM never emits joint targets or velocities.** Keep composite skills
    (`pick`, `place_on`) available; low-level ones (`reach`, `grasp`) are extras.
@@ -81,6 +82,7 @@ code: switch to osmesa and install `libosmesa6`.
 | New skill | `skills/library.py` (decorate with `@skill`) | `tools/registry.py`; failure codes in `eval/runner.py:PLANNER_CODES` if planner-caused |
 | New task | `eval/tasks.py` | a plan in `agents/scripted.py` (the smoke test runs every task) |
 | New scene layout | a `scene=` callable on the `Task` | locations for every table the planner must stand at |
+| New kind of support (bag, shelf) | `sim/scene.py` + its geoms in `env._support_name` | `place_on` branch in `skills/library.py`; see `sim/AGENTS.md` (Supports) |
 | Real walking policy | `control/locomotion.py:PolicyLocomotion` | expect `pick`/`place_on` regressions; see `control/AGENTS.md` |
 | Real grasping | `sim/env.py:attach` + `skills/library.py:grasp` | `pick` descent offsets |
 | New LLM backend | `agents/llm.py` | `eval/runner.py:make_agent` |

@@ -86,7 +86,13 @@ class SkillLibrary:
                 "dist_m": round(float(np.hypot(p[0] - x, p[1] - y)), 2),
                 "held_by": self.env.attached.get(name, (None,))[0],
             })
-        return SkillResult(True, data={"objects": out})
+        # Things to put objects on, so a planner can learn names like "bean_bag".
+        surfaces = [{"name": t.name, "pos": [t.pos[0], t.pos[1], t.height]} for t in self.env.scene.tables]
+        for b in self.env.scene.bags:
+            top, owner = self.env.surface_below(b.pos[0], b.pos[1], b.base_z + b.height + 0.02)
+            surfaces.append({"name": b.name, "pos": [round(b.pos[0], 3), round(b.pos[1], 3), round(top, 3)],
+                             "on": self.env.support_of_point(b.pos[0], b.pos[1], b.base_z), "soft": True})
+        return SkillResult(True, data={"objects": out, "surfaces": surfaces})
 
     @skill
     def list_locations(self) -> SkillResult:

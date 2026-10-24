@@ -13,7 +13,7 @@ SkillLibrary  go_to_location · pick · place_on · look_at · get_frame · reac
    ▼
 Controllers   LocomotionController (placeholder: KinematicGlide) · arm IK (DLS)
    ▼
-MuJoCo        G1 + tables + objects, ego & overview cameras
+MuJoCo        G1 + tables + bean bag + objects, ego & overview cameras
 ```
 
 ## Quick start
@@ -53,7 +53,8 @@ The server also exposes `list_tasks`, `reset_task(task_id)` and `check_task(answ
 | Arm reaching | Real: Cartesian waypoints → DLS IK → position actuators; collisions matter |
 | Placement / retract | Real motion; skill picks a clear spot and side-steps to it |
 | **Locomotion** | **FAKE.** `KinematicGlide` overwrites the base pose; legs are frozen. |
-| **Grasping** | **FAKE.** "Magic grasp": object is kinematically attached; collisions disabled while held. |
+| **Grasping** | **FAKE.** "Magic grasp": object is kinematically attached and kept level; collisions disabled while held and against the hand for a moment after release. |
+| Bean bag | **APPROXIMATE.** A bed of sprung, damped 3 cm cells (vertical slide joints): locally compliant and lumpy, but the filling never flows sideways. Physics, not the skill, decides whether a stack on it stays up. |
 | Perception | Ground truth (`list_objects`). Camera frames are real renders, not used by skills. |
 
 Every eval row and summary carries `locomotion_is_physical`, so placeholder results
@@ -63,16 +64,18 @@ cannot be mistaken for physical ones.
 
 | jitter | result | residual failures |
 |---|---|---|
-| 3 cm, 5 seeds | 35/35 | — |
+| 3 cm, 5 seeds | 47/50 | `clarify_which` 3/5 (its plan only encodes seed 0's answer); `bean_bag_tower` 4/5 (seed 4's lumpy crown topples a centred tower) |
 | 6 cm, 8 seeds | 54/56 | `approach_tracking` (arm blocked by table/self) |
 
 Run this before any LLM eval. If scripted fails, fix skills, not prompts.
 
 ## Eval
 
-`humanoid_agent/eval/tasks.py` — 7 tasks: navigation, single and multi pick-and-place,
-grounding ("the other table"), a query task (answer without disturbing anything), and an
-impossible task (purple cube) that rewards honest refusal.
+`humanoid_agent/eval/tasks.py` — 10 tasks: navigation, single and multi pick-and-place,
+grounding ("the other table"), a query task (answer without disturbing anything), an
+impossible task (purple cube) that rewards honest refusal, two floor-supervisor
+collaboration tasks, and `bean_bag_tower` (stack three cubes on a soft, lumpy bean bag;
+judged after 5 s of settling).
 
 Output: `runs/<stamp>_<agent>/results.jsonl` (full skill log per episode),
 `summary.md` (success per task; failure codes split into planner errors vs skill/sim errors),

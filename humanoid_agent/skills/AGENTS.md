@@ -17,7 +17,7 @@ planner-caused codes to that set.
 
 Current codes: `ok`, `fallen`, `bad_args`, `unknown_location`, `unknown_target`,
 `unknown_object`, `unknown_surface`, `unreachable`, `tracking`, `too_far`,
-`hand_full`, `not_holding`, `retract_blocked`, `no_free_space`, `placement`,
+`hand_full`, `not_holding`, `retract_blocked`, `no_free_space`, `no_support`, `placement`,
 `timeout`; composites prefix sub-step failures: `approach_*`, `descend_*`,
 `align_*` (e.g. `approach_tracking`).
 
@@ -41,7 +41,7 @@ so the sub-call is not logged as a separate planner action. Internal helpers
 
 | Group | Skills | Notes |
 |---|---|---|
-| Query | `get_state`, `list_objects`, `list_locations`, `get_frame` | `list_objects` is ground-truth perception; `get_frame` returns PNG bytes under `data["png_bytes"]` |
+| Query | `get_state`, `list_objects`, `list_locations`, `get_frame` | `list_objects` is ground-truth perception (with `on`, `tilt_deg`, and a `surfaces` list of tables and bags); `get_frame` returns PNG bytes under `data["png_bytes"]` |
 | Locomotion | `go_to_location`, `walk_to`, `turn_to`, `look_at` | `_walk_to`: turn-then-drive P-controller, 2 cm / 0.05 rad tolerance; a straight line that would enter a table (10 cm keep-out) is routed via table corners (`_route`, visibility graph) or refused `blocked_path`; yaw > 2π is `bad_args` |
 | Primitives | `reach`, `grasp`, `release`, `retract` | `grasp` = magic attach if object within 8 cm of palm |
 | Composites | `pick`, `place_on` | what planners should normally use |
@@ -54,18 +54,31 @@ every skill and attaches anything it said to that result as `data["supervisor_sa
 choose side (object's side of the body, else the free hand) → `_align_for`
 side-steps so the object sits at (`REACH_FWD`=0.30, ±`REACH_LAT`=0.15) in the
 body frame (fails `too_far` if that's >0.5 m away: walk first) → reach 10 cm
-above → descend to 4.5 cm above → magic grasp → lift 12 cm → carry pose.
+above → descend to 4.5 cm above → magic grasp → lift 12 cm → carry pose (palm at `CARRY_Z` = 1.05 m, high
+enough that the carried cube clears a two-cube stack on the bean bag).
 Lift/carry failures are reported in `data` but don't fail the skill.
 
 ### How `place_on` works
 pick the hand: `obj` names the held object; else `side`; with both hands full
-and neither given, fail `ambiguous` (never guess) → fail `too_far` if the table
-is >0.5 m from the base → `_free_spot` grid-searches the table (3 cm grid, 6 cm edge margin) for the point
-closest to the preferred spot (30 cm ahead in front of the placing hand, plus
-`dx`/`dy`) that is ≥15 cm from every other object and within 45 cm of it →
-align → approach from 10 cm above → descend so the object sits 1 cm above the
-surface → release → `_retract` → verify with `_support_of` that it landed on the
-requested table (`placement` failure otherwise). Success data includes the landed `pos`.
+and neither given, fail `ambiguous` (never guess). Then by `surface`:
+
+- **table**: fail `too_far` if the table is >0.5 m from the base → `_free_spot`
+  grid-searches it (3 cm grid, 6 cm edge margin) for the point closest to the
+  preferred spot (30 cm ahead in front of the placing hand, plus `dx`/`dy`) that
+  is ≥15 cm from every other object and within 45 cm of it (`no_free_space`).
+- **bag or object** (stacking): aim at its centre plus `dx`/`dy`; `no_support`
+  if that point is not over it.
+
+Height comes from `env.surface_below` over the object's footprint. Lift every
+carried object to `max(CARRY_Z, top + 0.17)` (side-stepping otherwise sweeps
+them through a stack) → align (`_align_for` refuses stances within
+`STANCE_MARGIN` = 9 cm of a table: the knees hit it) → approach 10 cm above →
+descend → **servo on the held object's position** (up to 4 corrections to
+<5 mm; the palm alone stops up to 3 cm off and the wrist swings the object) →
+release 1 cm above → `_retract` → settle 0.5 s → verify with `env.support_of`
+(`placement` failure otherwise). Success data: landed `pos`, `tilt_deg`,
+`release_miss_m`. Physics decides whether a stack stays up; the task checks
+again after its `settle_s`.
 
 ### Why `_reach` and `_retract` look the way they do
 `_reach` lifts to target height near the body before moving horizontally, and

@@ -14,6 +14,7 @@ skill layer broke. Fix the skill, don't edit the plan to route around it.
 
 For robustness beyond seed 0, run the jittered scripted eval
 (`python -m humanoid_agent.eval.runner --agent scripted --seeds 5`); the README
-records the expected baseline. There are no unit tests for individual skills
-or IK yet; if you add some, build a `HumanoidEnv` once per module (model build
-is the slow part).
+records the expected baseline. `test_skills.py` holds skill-level guards
+(refusals, routing, report names). `test_bean_bag.py` checks the soft support
+is not a renamed table: a tower shifted 1 cm per level stands on a table but
+falls on the bag (lump seed 1); a centred one stands on it.

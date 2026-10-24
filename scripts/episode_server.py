@@ -25,54 +25,53 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-import numpy as np
-
-from humanoid_agent.agents.base import EpisodeDone
-from humanoid_agent.eval import runner
-from humanoid_agent.eval.tasks import TASKS_BY_ID
-from humanoid_agent.sim.env import HumanoidEnv
-from humanoid_agent.tools.registry import result_to_text
-
-_recorders: dict[int, "VideoEnv"] = {}  # thread id -> env, so the server can find each episode's frames
-
-
-class VideoEnv(HumanoidEnv):
-    every = 5  # control steps per frame: 10 fps of sim time
-
-    def __init__(self, *a, **kw) -> None:
-        self.frames: list[np.ndarray] = []
-        self._k = 0
-        super().__init__(*a, render_size=(480, 360), **kw)
-        _recorders[threading.get_ident()] = self
-
-    def step(self, n: int = 1) -> None:
-        for _ in range(n):
-            super().step(1)
-            self._k += 1
-            if self._k % self.every == 0 and hasattr(self, "frames"):
-                cams = ["overview"] + [f"{b.name}_cam" for b in self.scene.bags[:1]]
-                self.frames.append(np.concatenate([self.render(c) for c in cams], axis=1))
-
-
-class RemoteAgent:
-    name = "subagent"
-
-    def __init__(self) -> None:
-        self.inbox: queue.Queue = queue.Queue()
-        self.outbox: queue.Queue = queue.Queue()
-
-    def run(self, task_id: str, prompt: str, call) -> None:
-        while True:
-            tool, args = self.inbox.get()
-            try:
-                res = call(tool, args)
-            except EpisodeDone:
-                self.outbox.put("episode ended")
-                raise
-            self.outbox.put(result_to_text(res))
-
 
 def serve(port: int, out: Path, video: bool, jitter: float) -> None:
+    # Sim imports live here so the client commands start fast and need no GL backend.
+    import numpy as np
+
+    from humanoid_agent.agents.base import EpisodeDone
+    from humanoid_agent.eval import runner
+    from humanoid_agent.eval.tasks import TASKS_BY_ID
+    from humanoid_agent.sim.env import HumanoidEnv
+    from humanoid_agent.tools.registry import result_to_text
+
+    recorders: dict[int, HumanoidEnv] = {}  # thread id -> env, so each episode's frames can be found
+
+    class VideoEnv(HumanoidEnv):
+        every = 5  # control steps per frame: 10 fps of sim time
+
+        def __init__(self, *a, **kw) -> None:
+            self.frames: list[np.ndarray] = []
+            self._k = 0
+            super().__init__(*a, render_size=(480, 360), **kw)
+            recorders[threading.get_ident()] = self
+
+        def step(self, n: int = 1) -> None:
+            for _ in range(n):
+                super().step(1)
+                self._k += 1
+                if self._k % self.every == 0:
+                    cams = ["overview"] + [f"{b.name}_cam" for b in self.scene.bags[:1]]
+                    self.frames.append(np.concatenate([self.render(c) for c in cams], axis=1))
+
+    class RemoteAgent:
+        name = "subagent"
+
+        def __init__(self) -> None:
+            self.inbox: queue.Queue = queue.Queue()
+            self.outbox: queue.Queue = queue.Queue()
+
+        def run(self, task_id: str, prompt: str, call) -> None:
+            while True:
+                tool, args = self.inbox.get()
+                try:
+                    res = call(tool, args)
+                except EpisodeDone:
+                    self.outbox.put("episode ended")
+                    raise
+                self.outbox.put(result_to_text(res))
+
     out.mkdir(parents=True, exist_ok=True)
     if video:
         runner.HumanoidEnv = VideoEnv
@@ -84,7 +83,7 @@ def serve(port: int, out: Path, video: bool, jitter: float) -> None:
         row["episode"] = eid
         with lock, open(out / "results.jsonl", "a") as f:
             f.write(json.dumps(row, default=str) + "\n")
-        env = _recorders.pop(threading.get_ident(), None)
+        env = recorders.pop(threading.get_ident(), None)
         if env is not None and env.frames:
             h, w, _ = env.frames[0].shape
             p = subprocess.Popen(["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
