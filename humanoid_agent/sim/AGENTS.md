@@ -49,10 +49,11 @@ Thin wrapper around `MjModel`/`MjData` that skills drive.
 
 - `base_pose()` yaw comes from the free-joint quaternion; under
   `KinematicGlide` the base never pitches/rolls, under a real policy it will.
-- Tables are static and the kinematic base ignores contact, so the robot can
-  walk *through* tables today (verified: `walk_to(2.0, 0.0)` from start passes
-  through `table_a` and reports success). Don't build tests that rely on
-  collisions blocking navigation until locomotion is physical.
+- Tables are static and the kinematic base ignores contact: if the base is driven
+  into a table, the body contorts over it and knocks objects to the floor while
+  reporting success. `SkillLibrary._walk_to` therefore routes around table
+  footprints; anything else that commands the base (`_step_to`, a new skill)
+  must not drive into a table either.
 
 ## supervisor.py
 

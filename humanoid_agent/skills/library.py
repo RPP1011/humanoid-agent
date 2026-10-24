@@ -81,7 +81,7 @@ class SkillLibrary:
             out.append({
                 "name": name,
                 "pos": [round(float(v), 3) for v in p],
-                "on": self._support_of(p),
+                "on": "held" if name in self.env.attached else self._support_of(p),
                 "dist_m": round(float(np.hypot(p[0] - x, p[1] - y)), 2),
                 "held_by": self.env.attached.get(name, (None,))[0],
             })
@@ -109,6 +109,8 @@ class SkillLibrary:
     # ================================================================ locomotion
     @skill
     def walk_to(self, x: float, y: float, yaw: float | None = None, timeout_s: float = 20.0) -> SkillResult:
+        if yaw is not None and abs(float(yaw)) > 2 * np.pi + 1e-6:
+            return SkillResult(False, f"bad_args: yaw is in radians, got {yaw} (degrees?)")
         return self._walk_to(float(x), float(y), None if yaw is None else float(yaw), timeout_s)
 
     @skill
@@ -120,11 +122,30 @@ class SkillLibrary:
 
     @skill
     def turn_to(self, yaw: float, timeout_s: float = 8.0) -> SkillResult:
+        if abs(float(yaw)) > 2 * np.pi + 1e-6:
+            return SkillResult(False, f"bad_args: yaw is in radians, got {yaw} (degrees?)")
         x, y, _ = self.env.base_pose()
         return self._walk_to(x, y, float(yaw), timeout_s)
 
     def _walk_to(self, gx: float, gy: float, gyaw: float | None, timeout_s: float,
                  pos_tol: float = 0.02, yaw_tol: float = 0.05) -> SkillResult:
+        # The kinematic base passes through furniture (and the body then wrecks the
+        # table), so refuse straight lines through tables; detour via one corner if possible.
+        x, y, _ = self.env.base_pose()
+        blocker = self._path_blocked((x, y), (gx, gy))
+        if blocker is not None:
+            route = self._route((x, y), (gx, gy))
+            if route is None:
+                return SkillResult(False, f"blocked_path: no clear route to ({gx:.2f}, {gy:.2f}); "
+                                          f"straight line crosses {blocker.name}")
+            for wx, wy in route:
+                r = self._walk_to(float(wx), float(wy), None, timeout_s)
+                if not r.success:
+                    return r
+            r = self._walk_to(gx, gy, gyaw, timeout_s)
+            if r.success:
+                r.data["detour_via"] = [[round(float(v), 2) for v in w] for w in route]
+            return r
         env, loco = self.env, self.env.loco
         t_end = env.time + timeout_s
         while env.time < t_end:
@@ -295,6 +316,8 @@ class SkillLibrary:
         if obj not in env.object_names:
             return SkillResult(False, f"unknown_object: {obj}")
         p = env.object_pos(obj)
+        if len({s for s, *_ in env.attached.values()}) == len(SIDES):
+            return SkillResult(False, "hand_full: both hands are holding something; place one first")
         if side is None:
             side = self._side_for(p)
             if any(s == side for s, *_ in env.attached.values()):
@@ -320,21 +343,36 @@ class SkillLibrary:
 
     @skill
     def place_on(self, surface: str, side: str | None = None,
-                 dx: float = 0.0, dy: float = 0.0) -> SkillResult:
-        """Place the held object on a table, in a free spot ~30cm in front of the robot.
+                 dx: float = 0.0, dy: float = 0.0, obj: str | None = None) -> SkillResult:
+        """Place a held object on a table, in a free spot ~30cm in front of the robot.
 
-        (dx, dy) shift the preferred spot in the robot's body frame (forward, left).
+        Select the object with `obj` (or the hand with `side`); with both hands full
+        and neither given, refuse rather than guess. (dx, dy) shift the preferred
+        spot in the robot's body frame (forward, left).
         """
         env = self.env
         held = {s: o for o, (s, *_) in env.attached.items()}
         if not held:
             return SkillResult(False, "not_holding: nothing in either hand")
-        side = side or next(iter(held))
+        if obj is not None:
+            if obj not in env.attached:
+                return SkillResult(False, f"not_holding: {obj} is not in a hand; holding {held}")
+            if side is not None and held.get(side) != obj:
+                return SkillResult(False, f"bad_args: {obj} is in the {env.attached[obj][0]} hand, not {side}")
+            side = env.attached[obj][0]
+        elif side is None:
+            if len(held) > 1:
+                return SkillResult(False, f"ambiguous: holding {held}; pass obj to say which to place")
+            side = next(iter(held))
         if side not in held:
             return SkillResult(False, f"not_holding: {side} hand is empty")
         table = next((t for t in env.scene.tables if t.name == surface), None)
         if table is None:
             return SkillResult(False, f"unknown_surface: {surface}")
+        x, y, _ = env.base_pose()
+        gap = np.hypot(max(abs(x - table.pos[0]) - table.size[0], 0), max(abs(y - table.pos[1]) - table.size[1], 0))
+        if gap > 0.5:
+            return SkillResult(False, f"too_far: {surface} is {gap:.2f}m away; go_to_location {surface} first")
         obj = held[side]
         spot = self._free_spot(table, obj, side, dx, dy)
         if spot is None:
@@ -358,9 +396,55 @@ class SkillLibrary:
         landed = self._support_of(env.object_pos(obj))
         if landed != surface:
             return SkillResult(False, f"placement: {obj} ended up on {landed}", rel.data)
-        return SkillResult(True, data={"placed": obj, "on": surface, "arm_retracted": ret.success})
+        return SkillResult(True, data={"placed": obj, "on": surface,
+                                       "pos": [round(float(v), 3) for v in env.object_pos(obj)],
+                                       "arm_retracted": ret.success})
 
     # ================================================================ helpers
+    BODY_RADIUS = 0.10  # base keep-out around table footprints (m)
+
+    def _in_table(self, t, p, margin: float) -> bool:
+        return abs(p[0] - t.pos[0]) <= t.size[0] + margin and abs(p[1] - t.pos[1]) <= t.size[1] + margin
+
+    def _path_blocked(self, a, b):
+        """First table the straight base path a->b enters, or None.
+
+        Starting inside a table's keep-out band (e.g. after stepping up to place)
+        only forbids entering the table itself, so the robot can always back away.
+        """
+        a, b = np.asarray(a, float), np.asarray(b, float)
+        n = max(2, int(np.linalg.norm(b - a) / 0.02))
+        pts = [a + (b - a) * (i / n) for i in range(1, n + 1)]
+        for t in self.env.scene.tables:
+            margin = 0.0 if self._in_table(t, a, self.BODY_RADIUS) else self.BODY_RADIUS
+            if any(self._in_table(t, p, margin) for p in pts):
+                return t
+        return None
+
+    def _route(self, a, b, clearance: float = 0.25):
+        """Shortest waypoint list a->b through table corners (visibility graph), or None."""
+        nodes = [np.asarray(a, float), np.asarray(b, float)] + [
+            np.array([t.pos[0] + sx * (t.size[0] + clearance), t.pos[1] + sy * (t.size[1] + clearance)])
+            for t in self.env.scene.tables for sx in (-1, 1) for sy in (-1, 1)]
+        dist, prev, todo = {0: 0.0}, {}, set(range(len(nodes)))
+        while todo:
+            i = min((j for j in todo if j in dist), key=dist.get, default=None)
+            if i is None or i == 1:
+                break
+            todo.discard(i)
+            for j in todo:
+                if self._path_blocked(nodes[i], nodes[j]) is None:
+                    d = dist[i] + float(np.linalg.norm(nodes[j] - nodes[i]))
+                    if d < dist.get(j, np.inf):
+                        dist[j], prev[j] = d, i
+        if 1 not in dist:
+            return None
+        route, i = [], prev[1]
+        while i != 0:
+            route.append(nodes[i])
+            i = prev[i]
+        return route[::-1]
+
     def _free_spot(self, table, obj: str, side: str, dx: float, dy: float,
                    margin: float = 0.06, clearance: float = 0.15, max_shift: float = 0.45):
         """Clear point on the table within a short side-step, closest to the preferred spot.

@@ -2,8 +2,10 @@
 
 ## tasks.py
 
-`Task(id, prompt, success, scene=default_scene, max_tool_calls=30, tags)`.
-`success(Episode)` is evaluated on **sim state** after the episode;
+`Task(id, prompt, checks, scene=default_scene, max_tool_calls=30, tags, supervisor)`.
+`checks` maps a readable condition name to a predicate on `Episode`; `report(ep)`
+returns each one's result and `success(ep)` is all of them. They are evaluated on
+**sim state** after the episode;
 `Episode` carries the env, the agent's `finish` answer, and object positions
 captured right after reset.
 
@@ -40,7 +42,7 @@ are substring matches; be aware they are lenient (see below).
 - The `call` closure counts tool calls; `finish` raises `EpisodeDone` with the
   answer; call number `max_tool_calls + 1` logs `budget` and ends the episode.
 - Agent crashes become `error` in the row (episode fails), not harness crashes.
-- Rows: task, seed, agent, success, tool_calls, sim/wall time, answer, error,
+- Rows: task, seed, agent, success, `checks` (per-condition), tool_calls, sim/wall time, answer, error,
   `locomotion_is_physical`, `skill_failures` (codes), full `log` (minus data).
 - `summarize` → per-task success table, failure codes split by
   `PLANNER_CODES` (planner) vs everything else (skills/sim), and a warning line

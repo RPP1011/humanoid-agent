@@ -68,14 +68,15 @@ def run_episode(agent, task: Task, seed: int, out_dir: Path, jitter: float = 0.0
         pass
     except Exception as e:  # agent/API crash is a result, not a harness crash
         error = f"{type(e).__name__}: {e}"
-    ok = bool(task.success(ep)) and error is None
+    checks = task.report(ep)
+    ok = all(checks.values()) and error is None
 
     tag = f"{task.id}_s{seed}"
     Image.fromarray(env.render("overview")).save(out_dir / f"{tag}_final.png")
     return {
         "task": task.id, "seed": seed, "agent": agent.name, "success": ok,
         "tool_calls": n_calls, "sim_time_s": round(env.time, 2), "wall_s": round(time.time() - t0, 2),
-        "answer": ep.answer, "error": error,
+        "answer": ep.answer, "error": error, "checks": checks,
         "locomotion_is_physical": env.loco.is_physical,
         "transcript": env.supervisor.transcript if env.supervisor else None,
         "skill_failures": [r["code"] for r in lib.log if not r.get("success", True)],

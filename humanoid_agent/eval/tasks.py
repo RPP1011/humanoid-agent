@@ -27,11 +27,17 @@ class Episode:
 class Task:
     id: str
     prompt: str
-    success: Callable[[Episode], bool]
+    checks: dict[str, Callable[[Episode], bool]]  # named conditions; success = all hold
     scene: Callable[[], SceneSpec] = default_scene
     max_tool_calls: int = 30
     tags: tuple[str, ...] = ()
     supervisor: Callable[[int], Supervisor] | None = None  # (seed) -> scripted human
+
+    def report(self, ep: Episode) -> dict[str, bool]:
+        return {name: bool(check(ep)) for name, check in self.checks.items()}
+
+    def success(self, ep: Episode) -> bool:
+        return all(self.report(ep).values())
 
 
 def _on(ep: Episode, obj: str, table: str) -> bool:
@@ -52,6 +58,9 @@ def _undisturbed(ep: Episode, tol: float = 0.02) -> bool:
     return all(np.linalg.norm(ep.env.object_pos(o) - p) < tol for o, p in ep.initial_objects.items())
 
 
+_REFUSALS = ("no purple", "not find", "doesn't exist", "does not exist", "no such", "isn't a purple", "there is no")
+
+
 def _answer_has(ep: Episode, *words: str) -> bool:
     a = (ep.answer or "").lower()
     return all(w in a for w in words)
@@ -70,7 +79,9 @@ def _revised_order_sup(seed: int) -> Supervisor:
     return Supervisor(rules=[Rule(
         lambda env: "red_cube" in env.attached and (not late or _near(env, "table_b")),
         "Change of plan: the red cube stays on table_a, put it back there. "
-        "Bring me the blue cube on table_b instead.")])
+        "Bring the blue cube over to table_b instead.")],
+        answers=[(("blue", "green", "which", "mean"),
+                  "The blue cube that's on table_a. Move it to table_b; leave green where it is.")])
 
 
 def _clarify_sup(seed: int) -> Supervisor:
@@ -86,30 +97,33 @@ def _clarify_want(seed: int) -> str:
 
 TASKS: list[Task] = [
     Task("nav_table_b", "Go stand at table_b.",
-         lambda ep: _at(ep, "table_b"), tags=("nav",)),
+         {"robot at table_b": lambda ep: _at(ep, "table_b")}, tags=("nav",)),
     Task("move_red_to_b", "Put the red cube on table_b.",
-         lambda ep: _on(ep, "red_cube", "table_b"), tags=("pnp",)),
+         {"red_cube on table_b": lambda ep: _on(ep, "red_cube", "table_b")}, tags=("pnp",)),
     Task("move_both_to_b", "Move both cubes that are on table_a over to table_b.",
-         lambda ep: _on(ep, "red_cube", "table_b") and _on(ep, "blue_cube", "table_b"), tags=("pnp", "multi")),
+         {"red_cube on table_b": lambda ep: _on(ep, "red_cube", "table_b"),
+          "blue_cube on table_b": lambda ep: _on(ep, "blue_cube", "table_b")}, tags=("pnp", "multi")),
     Task("fetch_green_to_a", "Bring the green cube to the other table.",
-         lambda ep: _on(ep, "green_cube", "table_a"), tags=("pnp", "grounding")),
+         {"green_cube on table_a": lambda ep: _on(ep, "green_cube", "table_a")}, tags=("pnp", "grounding")),
     Task("swap", "Swap things around: the red cube should end up on table_b and the green cube on table_a.",
-         lambda ep: _on(ep, "red_cube", "table_b") and _on(ep, "green_cube", "table_a"), tags=("pnp", "multi")),
+         {"red_cube on table_b": lambda ep: _on(ep, "red_cube", "table_b"),
+          "green_cube on table_a": lambda ep: _on(ep, "green_cube", "table_a")}, tags=("pnp", "multi")),
     Task("which_on_b", "Without moving anything, tell me which colour cube is on table_b. Use finish() to answer.",
-         lambda ep: _answer_has(ep, "green") and _undisturbed(ep), tags=("query",)),
+         {"answer names green": lambda ep: _answer_has(ep, "green"),
+          "nothing moved": _undisturbed}, tags=("query",)),
     Task("impossible_purple", "Put the purple cube on table_a.",
-         lambda ep: _undisturbed(ep) and any(w in (ep.answer or "").lower()
-                                             for w in ("no purple", "not find", "doesn't exist", "does not exist",
-                                                       "no such", "isn't a purple", "there is no")),
-         tags=("refusal",)),
+         {"answer says no purple cube": lambda ep: any(w in (ep.answer or "").lower() for w in _REFUSALS),
+          "nothing moved": _undisturbed}, tags=("refusal",)),
     # ---- floor-supervisor collaboration
     Task("revised_order", "Floor supervisor: put the red cube on table_b, please.",
-         lambda ep: (_on(ep, "red_cube", "table_a") and _on(ep, "blue_cube", "table_b")
-                     and _on(ep, "green_cube", "table_b")),
+         {"red_cube stays on table_a": lambda ep: _on(ep, "red_cube", "table_a"),
+          "blue_cube on table_b": lambda ep: _on(ep, "blue_cube", "table_b"),
+          "green_cube still on table_b": lambda ep: _on(ep, "green_cube", "table_b")},
          tags=("collab", "revision"), supervisor=_revised_order_sup),
     Task("clarify_which", "Floor supervisor: grab the cube off table_a and put it on table_b.",
-         lambda ep: (_on(ep, want := _clarify_want(ep.seed), "table_b")
-                     and _on(ep, ({"red_cube", "blue_cube"} - {want}).pop(), "table_a")),
+         {"requested cube on table_b": lambda ep: _on(ep, _clarify_want(ep.seed), "table_b"),
+          "other cube left on table_a": lambda ep: _on(ep, ({"red_cube", "blue_cube"} - {_clarify_want(ep.seed)}).pop(),
+                                                       "table_a")},
          tags=("collab", "clarify"), supervisor=_clarify_sup),
 ]
 

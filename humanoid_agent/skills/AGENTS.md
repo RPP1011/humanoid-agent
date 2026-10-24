@@ -42,7 +42,7 @@ so the sub-call is not logged as a separate planner action. Internal helpers
 | Group | Skills | Notes |
 |---|---|---|
 | Query | `get_state`, `list_objects`, `list_locations`, `get_frame` | `list_objects` is ground-truth perception; `get_frame` returns PNG bytes under `data["png_bytes"]` |
-| Locomotion | `go_to_location`, `walk_to`, `turn_to`, `look_at` | `_walk_to`: turn-then-drive P-controller, 2 cm / 0.05 rad tolerance, no obstacle avoidance |
+| Locomotion | `go_to_location`, `walk_to`, `turn_to`, `look_at` | `_walk_to`: turn-then-drive P-controller, 2 cm / 0.05 rad tolerance; a straight line that would enter a table (10 cm keep-out) is routed via table corners (`_route`, visibility graph) or refused `blocked_path`; yaw > 2π is `bad_args` |
 | Primitives | `reach`, `grasp`, `release`, `retract` | `grasp` = magic attach if object within 8 cm of palm |
 | Composites | `pick`, `place_on` | what planners should normally use |
 | People | `ask_supervisor`, `report` | `no_supervisor` if the task has none; asking costs 2 s of sim time |
@@ -58,12 +58,14 @@ above → descend to 4.5 cm above → magic grasp → lift 12 cm → carry pose.
 Lift/carry failures are reported in `data` but don't fail the skill.
 
 ### How `place_on` works
-`_free_spot` grid-searches the table (3 cm grid, 6 cm edge margin) for the point
+pick the hand: `obj` names the held object; else `side`; with both hands full
+and neither given, fail `ambiguous` (never guess) → fail `too_far` if the table
+is >0.5 m from the base → `_free_spot` grid-searches the table (3 cm grid, 6 cm edge margin) for the point
 closest to the preferred spot (30 cm ahead in front of the placing hand, plus
 `dx`/`dy`) that is ≥15 cm from every other object and within 45 cm of it →
 align → approach from 10 cm above → descend so the object sits 1 cm above the
 surface → release → `_retract` → verify with `_support_of` that it landed on the
-requested table (`placement` failure otherwise).
+requested table (`placement` failure otherwise). Success data includes the landed `pos`.
 
 ### Why `_reach` and `_retract` look the way they do
 `_reach` lifts to target height near the body before moving horizontally, and

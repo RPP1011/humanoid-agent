@@ -72,7 +72,10 @@ def build_server(task_id: str | None) -> Server:
             if sess.task is None:
                 return text("no task loaded; call reset_task first", True)
             sess.episode.answer = args.get("answer")
-            return text(f"{sess.task.id}: {'SUCCESS' if sess.task.success(sess.episode) else 'NOT YET'}")
+            report = sess.task.report(sess.episode)
+            lines = [f"{sess.task.id}: {'SUCCESS' if all(report.values()) else 'NOT YET'}"]
+            lines += [f"  [{'x' if ok else ' '}] {name}" for name, ok in report.items()]
+            return text("\n".join(lines))
 
         res = await anyio.to_thread.run_sync(lambda: call_tool(sess.lib, name, args))
         content: list = []

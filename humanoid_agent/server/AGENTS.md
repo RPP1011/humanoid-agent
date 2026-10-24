@@ -11,7 +11,8 @@ constructor and handler signatures first.
   `--task` loads that task's scene; otherwise the default scene ("free play").
 - Tools = every `ToolSpec` in `tools/registry.py` + three control tools:
   `list_tasks`, `reset_task(task_id?)` (rebuilds the env, returns the prompt),
-  `check_task(answer?)` (runs the task's ground-truth success check).
+  `check_task(answer?)` (runs the task's ground-truth checks and lists each
+  condition as met or not).
   `finish` is **not** exposed.
 - Sim work runs in a worker thread (`anyio.to_thread.run_sync`) so the event
   loop stays responsive. Results carry an `ImageContent` block when the skill
