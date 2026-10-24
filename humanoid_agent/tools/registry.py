@@ -44,7 +44,7 @@ TOOLS: list[ToolSpec] = [
              lambda L, camera="ego": L.get_frame(camera)),
     ToolSpec("go_to_location", "Walk to a named location and face its stored heading.",
              {"name": {"type": "string"}}, ["name"], lambda L, name: L.go_to_location(name)),
-    ToolSpec("walk_to", "Walk to world (x, y), optionally ending at heading yaw (radians).",
+    ToolSpec("walk_to", "Walk to world (x, y), optionally ending at heading yaw (radians). Routes around tables.",
              {"x": _num("metres"), "y": _num("metres"), "yaw": _num("radians, optional")}, ["x", "y"],
              lambda L, x, y, yaw=None: L.walk_to(x, y, yaw)),
     ToolSpec("turn_to", "Rotate in place to heading yaw (radians).",
@@ -55,9 +55,11 @@ TOOLS: list[ToolSpec] = [
              {"obj": {"type": "string"}, "side": SIDE}, ["obj"],
              lambda L, obj, side=None: L.pick(obj, side)),
     ToolSpec("place_on", "Place a held object on a table in a free spot in front of the robot. Stand at the table first. "
+                         "Name the object with obj (required if both hands are full). "
                          "dx/dy shift the spot forward/left in metres.",
-             {"surface": {"type": "string"}, "side": SIDE, "dx": _num("forward offset"), "dy": _num("left offset")},
-             ["surface"], lambda L, surface, side=None, dx=0.0, dy=0.0: L.place_on(surface, side, dx, dy)),
+             {"surface": {"type": "string"}, "obj": {"type": "string", "description": "held object to place"},
+              "side": SIDE, "dx": _num("forward offset"), "dy": _num("left offset")},
+             ["surface"], lambda L, surface, obj=None, side=None, dx=0.0, dy=0.0: L.place_on(surface, side, dx, dy, obj)),
     ToolSpec("reach", "Low-level: move a palm to world point (x, y, z).",
              {"side": SIDE, "x": _num("m"), "y": _num("m"), "z": _num("m")}, ["side", "x", "y", "z"],
              lambda L, side, x, y, z: L.reach(side, x, y, z)),
