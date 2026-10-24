@@ -79,7 +79,9 @@ def _revised_order_sup(seed: int) -> Supervisor:
     return Supervisor(rules=[Rule(
         lambda env: "red_cube" in env.attached and (not late or _near(env, "table_b")),
         "Change of plan: the red cube stays on table_a, put it back there. "
-        "Bring me the blue cube on table_b instead.")])
+        "Bring the blue cube over to table_b instead.")],
+        answers=[(("blue", "green", "which", "mean"),
+                  "The blue cube that's on table_a. Move it to table_b; leave green where it is.")])
 
 
 def _clarify_sup(seed: int) -> Supervisor:
