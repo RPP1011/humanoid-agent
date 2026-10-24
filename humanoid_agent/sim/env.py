@@ -84,8 +84,22 @@ class HumanoidEnv:
         self._obj_contact = {
             o: (int(m.geom_contype[g]), int(m.geom_conaffinity[g])) for o, g in self._obj_geom.items()
         }
-        # object -> (side, pos_in_hand, quat_in_hand). "Magic grasp" attachments.
-        self.attached: dict[str, tuple[str, np.ndarray, np.ndarray]] = {}
+        # Support lookup: world geoms (group 0) -> the table/bag/object/floor they belong to.
+        self._support_name = {mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "floor"): "floor"}
+        for t in self.scene.tables:
+            bid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, t.name)
+            self._support_name.update({g: t.name for g in range(m.ngeom) if m.geom_bodyid[g] == bid})
+        for b in self.scene.bags:
+            self._support_name.update({g: b.name for g in range(m.ngeom)
+                                       if (mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g) or "").startswith(f"{b.name}_cell")})
+        self._support_name.update({g: o for o, g in self._obj_geom.items()})
+        self._obj_body = {o: int(m.geom_bodyid[g]) for o, g in self._obj_geom.items()}
+        self._bag_qadr = np.array([m.jnt_qposadr[j] for j in range(m.njnt)
+                                   if any((mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_JOINT, j) or "").startswith(f"{b.name}_cell")
+                                          for b in self.scene.bags)], dtype=int)
+        # object -> (side, pos_in_hand, yaw relative to the base). "Magic grasp" attachments.
+        self.attached: dict[str, tuple[str, np.ndarray, float]] = {}
+        self._ghosts: set[str] = set()  # released, not yet clear of the hand
         self.arm_target = {s: self.stand_ctrl[self.arm_act[s]].copy() for s in ("left", "right")}
         self.hand_target = {s: self.stand_ctrl[self.hand_act[s]].copy() for s in ("left", "right")}
         # Optional scripted human (sim/supervisor.py), set per task. Skills tick it.
@@ -95,6 +109,7 @@ class HumanoidEnv:
     # ---------------------------------------------------------------- lifecycle
     def reset(self) -> None:
         mujoco.mj_resetDataKeyframe(self.model, self.data, self._key)
+        self.data.qpos[self._bag_qadr] = 0.0  # keyframe only covers the robot; un-dent the bags
         # Keyframe only covers the robot; restore object poses from the spec.
         for o in self.scene.objects:
             a = self._obj_qadr[o.name]
@@ -103,6 +118,8 @@ class HumanoidEnv:
         mujoco.mj_forward(self.model, self.data)
         for o in list(self.attached):
             self.detach(o)
+        for o in list(self._ghosts):
+            self._unghost(o)
         for s in ("left", "right"):
             self.arm_target[s] = self.stand_ctrl[self.arm_act[s]].copy()
             self.hand_target[s] = self.stand_ctrl[self.hand_act[s]].copy()
@@ -124,6 +141,9 @@ class HumanoidEnv:
                 self.loco.post_physics(self)
                 self._apply_attachments()
             mujoco.mj_forward(self.model, self.data)
+            for o in [o for o in self._ghosts
+                      if min(np.linalg.norm(self.object_pos(o) - self.palm_pos(s)) for s in ("left", "right")) > 0.15]:
+                self._unghost(o)
 
     # ---------------------------------------------------------------- state
     @property
@@ -144,6 +164,49 @@ class HumanoidEnv:
         a = self._obj_qadr[name]
         return self.data.qpos[a:a + 3].copy()
 
+    def tilt_deg(self, name: str) -> float:
+        """Angle between the object's local z axis and world up."""
+        a = self._obj_qadr[name]
+        R = np.zeros(9)
+        mujoco.mju_quat2Mat(R, self.data.qpos[a + 3:a + 7])
+        return float(np.degrees(np.arccos(np.clip(R[8], -1.0, 1.0))))
+
+    def surface_below(self, x: float, y: float, z: float = 2.0, exclude: str | None = None,
+                      half: float = 0.0) -> tuple[float, str]:
+        """Highest world surface under (x, y) below height z: (height, owner name).
+
+        With `half` > 0 the height is the max over a 3x3 grid spanning a square
+        footprint of that half-size (the owner is still what is under the centre):
+        lowering a flat-bottomed object to the centre height alone would sink its
+        corners into a lumpy support, and it would be ejected on release.
+        Only group-0 geoms (floor, tables, bags, objects) are hit; the robot's
+        collision meshes live in group 3, so an arm over the spot does not count.
+        """
+        gid = np.zeros(1, np.int32)
+        mask = np.array([1, 0, 0, 0, 0, 0], np.uint8)
+        body = self._obj_body[exclude] if exclude else -1
+        top, owner = 0.0, "floor"
+        offs = (-half, 0.0, half) if half > 0 else (0.0,)
+        for ox in offs:
+            for oy in offs:
+                d = mujoco.mj_ray(self.model, self.data, np.array([x + ox, y + oy, z]), np.array([0.0, 0.0, -1.0]),
+                                  mask, 1, body, gid)
+                if d >= 0:
+                    top = max(top, z - d)
+                    if ox == 0.0 and oy == 0.0:
+                        owner = self._support_name.get(int(gid[0]), "unknown")
+        return top, owner
+
+    def support_of(self, name: str) -> str:
+        """What an object rests on: a table, bag or object name, 'floor', 'air' or 'held'."""
+        if name in self.attached:
+            return "held"
+        p = self.object_pos(name)
+        half = next(o.half_size for o in self.scene.objects if o.name == name)
+        z, owner = self.surface_below(p[0], p[1], p[2], exclude=name)
+        # A cube balanced on an edge or corner sits up to half*sqrt(3) above what holds it.
+        return owner if p[2] - z < 1.8 * half + 0.01 else "air"
+
     def palm_pos(self, side: str) -> np.ndarray:
         b = self.hand_body[side]
         return self.data.xpos[b] + self.data.xmat[b].reshape(3, 3) @ PALM_OFFSET
@@ -154,11 +217,9 @@ class HumanoidEnv:
         R = self.data.xmat[b].reshape(3, 3)
         a = self._obj_qadr[obj]
         rel_p = R.T @ (self.data.qpos[a:a + 3] - self.data.xpos[b])
-        hq_inv = np.zeros(4)
-        mujoco.mju_negQuat(hq_inv, self.data.xquat[b])
-        rel_q = np.zeros(4)
-        mujoco.mju_mulQuat(rel_q, hq_inv, self.data.qpos[a + 3:a + 7])
-        self.attached[obj] = (side, rel_p, rel_q)
+        rel_yaw = _yaw_from_quat(self.data.qpos[a + 3:a + 7]) - self.base_pose()[2]
+        self.attached[obj] = (side, rel_p, rel_yaw)
+        self._ghosts.discard(obj)
         # Held objects are moved kinematically; letting them collide would inject
         # unbounded penetration forces into the scene. Disable until released.
         g = self._obj_geom[obj]
@@ -167,20 +228,32 @@ class HumanoidEnv:
 
     def detach(self, obj: str) -> None:
         if self.attached.pop(obj, None) is not None:
+            # The magic grasp leaves the object overlapping the fingers/wrist; colliding
+            # with them on release kicks it off whatever it was set down on (fatal for
+            # a stack). Collide with the world only until it is clear of both hands.
             g = self._obj_geom[obj]
-            self.model.geom_contype[g], self.model.geom_conaffinity[g] = self._obj_contact[obj]
+            self.model.geom_contype[g] = self.model.geom_conaffinity[g] = 2
+            self._ghosts.add(obj)
+
+    def _unghost(self, obj: str) -> None:
+        self._ghosts.discard(obj)
+        g = self._obj_geom[obj]
+        self.model.geom_contype[g], self.model.geom_conaffinity[g] = self._obj_contact[obj]
 
     def _apply_attachments(self) -> None:
         if not self.attached:
             return
         mujoco.mj_kinematics(self.model, self.data)
-        for obj, (side, rel_p, rel_q) in self.attached.items():
+        base_yaw = self.base_pose()[2]
+        for obj, (side, rel_p, rel_yaw) in self.attached.items():
             b = self.hand_body[side]
             a, d = self._obj_qadr[obj], self._obj_dadr[obj]
             self.data.qpos[a:a + 3] = self.data.xpos[b] + self.data.xmat[b].reshape(3, 3) @ rel_p
-            q = np.zeros(4)
-            mujoco.mju_mulQuat(q, self.data.xquat[b], rel_q)
-            self.data.qpos[a + 3:a + 7] = q
+            # Position follows the hand; orientation is kept level and turns with the body.
+            # Position-only arm IK lets the wrist roll freely, so a rigid hand-frame
+            # attachment would release cubes up to ~30 deg tilted. Part of the placeholder.
+            h = (base_yaw + rel_yaw) / 2
+            self.data.qpos[a + 3:a + 7] = (np.cos(h), 0.0, 0.0, np.sin(h))
             self.data.qvel[d:d + 6] = 0.0
 
     # ---------------------------------------------------------------- rendering

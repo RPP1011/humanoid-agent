@@ -35,7 +35,8 @@ def _num(desc: str) -> dict:
 TOOLS: list[ToolSpec] = [
     ToolSpec("get_state", "Robot base pose (x, y metres; yaw radians), what each hand holds, sim time.",
              {}, [], lambda L: L.get_state()),
-    ToolSpec("list_objects", "All objects with world position, what they rest on, distance from robot, and holder.",
+    ToolSpec("list_objects", "All objects with world position, what they rest on (a table, the bean bag, another "
+                             "object, floor), tilt from upright in degrees, distance from robot, and holder.",
              {}, [], lambda L: L.list_objects()),
     ToolSpec("list_locations", "Named places the robot can go to with go_to_location.",
              {}, [], lambda L: L.list_locations()),
@@ -54,11 +55,14 @@ TOOLS: list[ToolSpec] = [
     ToolSpec("pick", "Pick up an object within arm's reach (stand at the table first). Side auto-chosen if omitted.",
              {"obj": {"type": "string"}, "side": SIDE}, ["obj"],
              lambda L, obj, side=None: L.pick(obj, side)),
-    ToolSpec("place_on", "Place a held object on a table, automatically choosing a spot clear of other objects near the "
-                         "robot (side-steps if needed). Stand at the table first. "
+    ToolSpec("place_on", "Place a held object on a surface: a table (auto-picks a spot clear of other objects near the "
+                         "robot), a bean bag (aims at its centre), or another object to stack on top of it (aims at its "
+                         "centre). Side-steps if needed; stand at the table first. The object is let go and physics "
+                         "decides whether it stays: check the returned tilt_deg. "
                          "Name the object with obj (required if both hands are full). "
                          "dx/dy shift the spot forward/left in metres.",
-             {"surface": {"type": "string"}, "obj": {"type": "string", "description": "held object to place"},
+             {"surface": {"type": "string", "description": "table, bag or object name"},
+              "obj": {"type": "string", "description": "held object to place"},
               "side": SIDE, "dx": _num("forward offset"), "dy": _num("left offset")},
              ["surface"], lambda L, surface, obj=None, side=None, dx=0.0, dy=0.0: L.place_on(surface, side, dx, dy, obj)),
     ToolSpec("ask_supervisor", "Ask the floor supervisor a question (takes ~2 s). Their unprompted messages "

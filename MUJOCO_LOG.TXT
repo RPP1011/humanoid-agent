@@ -1,0 +1,26 @@
+WARNING Sat Oct 24 23:10:18 2026: Attaching a spec with an empty prefix may prevent the model from being saved correctly.
+
+WARNING Sat Oct 24 23:32:22 2026: Nan, Inf or huge value in QACC at DOF 97. The simulation is unstable. Time = 0.0140.
+
+WARNING Sat Oct 24 23:32:22 2026: Nan, Inf or huge value in QACC at DOF 97. The simulation is unstable. Time = 0.0140.
+
+WARNING Sat Oct 24 23:32:27 2026: Nan, Inf or huge value in QACC at DOF 97. The simulation is unstable. Time = 0.0140.
+
+WARNING Sat Oct 24 23:32:27 2026: Nan, Inf or huge value in QACC at DOF 97. The simulation is unstable. Time = 0.0140.
+
+WARNING Sat Oct 24 23:32:32 2026: Nan, Inf or huge value in QACC at DOF 97. The simulation is unstable. Time = 0.0140.
+
+WARNING Sat Oct 24 23:32:32 2026: Nan, Inf or huge value in QACC at DOF 97. The simulation is unstable. Time = 0.0140.
+
+WARNING Sat Oct 24 23:32:37 2026: Nan, Inf or huge value in QACC at DOF 97. The simulation is unstable. Time = 0.0140.
+
+WARNING Sat Oct 24 23:32:37 2026: Nan, Inf or huge value in QACC at DOF 97. The simulation is unstable. Time = 0.0140.
+
+WARNING Sat Oct 24 23:32:41 2026: Nan, Inf or huge value in QACC at DOF 97. The simulation is unstable. Time = 0.0140.
+
+WARNING Sat Oct 24 23:32:42 2026: Nan, Inf or huge value in QACC at DOF 97. The simulation is unstable. Time = 0.0140.
+
+WARNING Sat Oct 24 23:32:47 2026: Nan, Inf or huge value in QACC at DOF 97. The simulation is unstable. Time = 0.0140.
+
+WARNING Sat Oct 24 23:32:47 2026: Nan, Inf or huge value in QACC at DOF 97. The simulation is unstable. Time = 0.0140.
+

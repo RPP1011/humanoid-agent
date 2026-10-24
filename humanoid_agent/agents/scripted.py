@@ -39,6 +39,13 @@ PLANS: dict[str, list[tuple[str, dict]]] = {
         ("go_to_location", {"name": "table_a"}), ("pick", {"obj": "blue_cube"}),
         ("go_to_location", {"name": "table_b"}), ("place_on", {"surface": "table_b"}),
     ],
+    "bean_bag_tower": [
+        ("go_to_location", {"name": "table_a"}), ("pick", {"obj": "red_cube"}), ("pick", {"obj": "blue_cube"}),
+        ("go_to_location", {"name": "table_b"}),
+        ("place_on", {"surface": "bean_bag", "obj": "red_cube"}), ("place_on", {"surface": "red_cube", "obj": "blue_cube"}),
+        ("go_to_location", {"name": "table_a"}), ("pick", {"obj": "green_cube"}),
+        ("go_to_location", {"name": "table_b"}), ("place_on", {"surface": "blue_cube"}),
+    ],
     "which_on_b": [("list_objects", {}), ("finish", {"answer": "green"})],
     "impossible_purple": [("list_objects", {}), ("finish", {"answer": "There is no purple cube in the room."})],
 }

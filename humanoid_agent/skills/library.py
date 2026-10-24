@@ -81,7 +81,8 @@ class SkillLibrary:
             out.append({
                 "name": name,
                 "pos": [round(float(v), 3) for v in p],
-                "on": "held" if name in self.env.attached else self._support_of(p),
+                "on": self.env.support_of(name),
+                "tilt_deg": round(self.env.tilt_deg(name)),
                 "dist_m": round(float(np.hypot(p[0] - x, p[1] - y)), 2),
                 "held_by": self.env.attached.get(name, (None,))[0],
             })
@@ -282,7 +283,7 @@ class SkillLibrary:
         env.hand_target[side] = env.stand_ctrl[env.hand_act[side]].copy()
         env.step(25)
         return SkillResult(True, data={"released": held,
-                                       "landed_on": [self._support_of(env.object_pos(o)) for o in held]})
+                                       "landed_on": [env.support_of(o) for o in held]})
 
     @skill
     def retract(self, side: str) -> SkillResult:
@@ -337,7 +338,7 @@ class SkillLibrary:
         if not g.success:
             return g
         lift = self._reach(side, env.palm_pos(side) + [0, 0, 0.12])
-        carry = self._reach(side, self._body_to_world(0.22, 0.18 if side == "left" else -0.18, 0.95))
+        carry = self._reach(side, self._carry_point(side, self.CARRY_Z))
         return SkillResult(True, data={"holding": obj, "side": side,
                                        "lifted": lift.success, "in_carry_pose": carry.success})
 
@@ -366,38 +367,72 @@ class SkillLibrary:
             side = next(iter(held))
         if side not in held:
             return SkillResult(False, f"not_holding: {side} hand is empty")
-        table = next((t for t in env.scene.tables if t.name == surface), None)
-        if table is None:
-            return SkillResult(False, f"unknown_surface: {surface}")
-        x, y, _ = env.base_pose()
-        gap = np.hypot(max(abs(x - table.pos[0]) - table.size[0], 0), max(abs(y - table.pos[1]) - table.size[1], 0))
-        if gap > 0.5:
-            return SkillResult(False, f"too_far: {surface} is {gap:.2f}m away; go_to_location {surface} first")
         obj = held[side]
-        spot = self._free_spot(table, obj, side, dx, dy)
-        if spot is None:
-            return SkillResult(False, f"no_free_space: no clear reachable spot on {surface}; "
-                                      f"reposition or clear the table")
-        a = self._align_for(np.array([spot[0], spot[1], table.height]), side)
+        table = next((t for t in env.scene.tables if t.name == surface), None)
+        bag = next((b for b in env.scene.bags if b.name == surface), None)
+        x, y, _ = env.base_pose()
+        if table is not None:
+            gap = np.hypot(max(abs(x - table.pos[0]) - table.size[0], 0), max(abs(y - table.pos[1]) - table.size[1], 0))
+            if gap > 0.5:
+                return SkillResult(False, f"too_far: {surface} is {gap:.2f}m away; go_to_location {surface} first")
+            spot = self._free_spot(table, obj, side, dx, dy)
+            if spot is None:
+                return SkillResult(False, f"no_free_space: no clear reachable spot on {surface}; "
+                                          f"reposition or clear the table")
+        elif bag is not None or surface in env.object_names:
+            if surface == obj:
+                return SkillResult(False, f"bad_args: cannot place {obj} on itself")
+            if surface in env.attached:
+                return SkillResult(False, f"bad_args: {surface} is held; place it first")
+            # Soft or small supports: aim at their centre (the flattest, most supported
+            # point), shifted by (dx, dy) in the body frame.
+            c = np.array(bag.pos) if bag is not None else env.object_pos(surface)[:2]
+            _, _, yaw = env.base_pose()
+            spot = c + np.array([np.cos(yaw) * dx - np.sin(yaw) * dy, np.sin(yaw) * dx + np.cos(yaw) * dy])
+            if np.hypot(spot[0] - x, spot[1] - y) > self.REACH_FWD + 0.5:
+                return SkillResult(False, f"too_far: {surface} is out of reach; walk to it first")
+        else:
+            return SkillResult(False, f"unknown_surface: {surface}; use a table, bag or object name")
+        half = next(o.half_size for o in env.scene.objects if o.name == obj)
+        top, hit = env.surface_below(spot[0], spot[1], exclude=obj, half=half)
+        if table is None and hit != surface:
+            return SkillResult(False, f"no_support: the spot above {surface} is over {hit}; use dx/dy closer to its centre",
+                               {"spot": [round(float(v), 3) for v in spot]})
+        # Side-stepping sweeps the carried objects (and fingers ~8cm below the palm)
+        # sideways: lift them clear of a tall support or stack first.
+        for s_, o in held.items():
+            self._reach(s_, self._carry_point(s_, max(self.CARRY_Z, top + 0.17)))
+        a = self._align_for(np.array([spot[0], spot[1], top]), side)
         if not a.success:
             return a
         # Palm target such that the held object's centre ends up just above the surface.
-        half = next(o.half_size for o in env.scene.objects if o.name == obj)
         palm_minus_obj = env.palm_pos(side) - env.object_pos(obj)
-        target = np.array([spot[0], spot[1], table.height + half + 0.01]) + palm_minus_obj
+        target = np.array([spot[0], spot[1], top + half + 0.01]) + palm_minus_obj
         r = self._reach(side, target + [0, 0, 0.10], tol=0.05)
         if not r.success:
             return SkillResult(False, f"approach_{r.reason}", r.data)
         r = self._reach(side, target)
         if not r.success:
             return SkillResult(False, f"descend_{r.reason}", r.data)
+        goal = np.array([spot[0], spot[1], top + half + 0.01])
+        # The palm stops up to 3cm off, and position-only IK lets the wrist (and so the
+        # held object) swing on the way down: servo on the object itself. Stacking needs
+        # ~1cm; near a table edge a few cm decides whether it lands on the table at all.
+        for _ in range(4):
+            err = goal - env.object_pos(obj)
+            if np.linalg.norm(err) < 0.005:
+                break
+            self._reach(side, env.palm_pos(side) + err, timeout_s=0.6, tol=0.003)
+        miss = float(np.linalg.norm((goal - env.object_pos(obj))[:2]))
         rel = SkillLibrary.release.__wrapped__(self, side)
         ret = self._retract(side)
-        landed = self._support_of(env.object_pos(obj))
+        env.step(25)  # let soft supports and stacks settle before judging the result
+        landed = env.support_of(obj)
         if landed != surface:
             return SkillResult(False, f"placement: {obj} ended up on {landed}", rel.data)
         return SkillResult(True, data={"placed": obj, "on": surface,
                                        "pos": [round(float(v), 3) for v in env.object_pos(obj)],
+                                       "tilt_deg": round(env.tilt_deg(obj)), "release_miss_m": round(miss, 3),
                                        "arm_retracted": ret.success})
 
     # ================================================================ helpers
@@ -467,8 +502,16 @@ class SkillLibrary:
                 best, best_d = q, d
         return best
 
+    # Carried objects hang ~7cm below the palm and the fingers ~8cm; at 1.05m they
+    # clear a two-cube stack on the bean bag when the robot turns beside it.
+    CARRY_Z = 1.05
+
+    def _carry_point(self, side: str, z: float) -> np.ndarray:
+        return self._body_to_world(0.22, 0.18 if side == "left" else -0.18, z)
+
     REACH_FWD = 0.30   # comfortable forward reach at table height (m, body frame)
     REACH_LAT = 0.15   # lateral offset that puts a point in front of one hand
+    STANCE_MARGIN = 0.09  # base this close to a table edge puts the knees into it
 
     def _align_for(self, p: np.ndarray, side: str, tol: float = 0.04) -> SkillResult:
         """Side-step / step so world point p sits at (REACH_FWD, ±REACH_LAT) in the body frame."""
@@ -481,6 +524,9 @@ class SkillLibrary:
             return SkillResult(True)
         if np.hypot(bx - x, by - y) > 0.5:
             return SkillResult(False, "too_far: target is more than 0.5m from a reachable stance; walk closer first")
+        if any(self._in_table(t, (bx, by), self.STANCE_MARGIN) for t in self.env.scene.tables):
+            # The kinematic base would drive the legs into the table and wreck the arm.
+            return SkillResult(False, "too_far: target is too deep into the table to reach from its edge")
         r = self._step_to(bx, by, yaw)
         if not r.success:
             return SkillResult(False, f"align_{r.reason}", r.data)
@@ -504,13 +550,6 @@ class SkillLibrary:
             env.step()
         loco.stop()
         return SkillResult(False, "timeout: side-step did not converge")
-
-    def _support_of(self, p: np.ndarray) -> str:
-        for t in self.env.scene.tables:
-            if (abs(p[0] - t.pos[0]) <= t.size[0] and abs(p[1] - t.pos[1]) <= t.size[1]
-                    and p[2] > t.height - 0.02):
-                return t.name
-        return "floor" if p[2] < 0.15 else "air"
 
     def _body_to_world(self, fx: float, fy: float, z: float) -> np.ndarray:
         x, y, yaw = self.env.base_pose()
