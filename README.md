@@ -112,3 +112,5 @@ humanoid_agent/
   server/mcp_server.py MCP stdio server (mcp>=2.3)
 tests/test_smoke.py    scripted plans must pass
 ```
+
+Coding agents: start at `AGENTS.md` (each package has its own `AGENTS.md`; `CLAUDE.md` files import them).

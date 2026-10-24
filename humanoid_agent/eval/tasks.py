@@ -12,12 +12,14 @@ import numpy as np
 
 from ..sim.env import HumanoidEnv
 from ..sim.scene import SceneSpec, default_scene
+from ..sim.supervisor import Rule, Supervisor
 
 
 @dataclass
 class Episode:
     env: HumanoidEnv
     answer: str | None = None
+    seed: int = 0
     initial_objects: dict[str, np.ndarray] = field(default_factory=dict)
 
 
@@ -29,6 +31,7 @@ class Task:
     scene: Callable[[], SceneSpec] = default_scene
     max_tool_calls: int = 30
     tags: tuple[str, ...] = ()
+    supervisor: Callable[[int], Supervisor] | None = None  # (seed) -> scripted human
 
     def report(self, ep: Episode) -> dict[str, bool]:
         return {name: bool(check(ep)) for name, check in self.checks.items()}
@@ -63,6 +66,33 @@ def _answer_has(ep: Episode, *words: str) -> bool:
     return all(w in a for w in words)
 
 
+def _near(env, loc: str, tol: float = 0.3) -> bool:
+    x, y, _ = env.base_pose()
+    lx, ly, _ = env.scene.locations[loc]
+    return bool(np.hypot(x - lx, y - ly) < tol)
+
+
+def _revised_order_sup(seed: int) -> Supervisor:
+    # Even seeds: the change lands as soon as red is picked up (robot still at table_a).
+    # Odd seeds: it lands once the robot has carried red over to table_b, so it must walk back.
+    late = seed % 2 == 1
+    return Supervisor(rules=[Rule(
+        lambda env: "red_cube" in env.attached and (not late or _near(env, "table_b")),
+        "Change of plan: the red cube stays on table_a, put it back there. "
+        "Bring me the blue cube on table_b instead.")])
+
+
+def _clarify_sup(seed: int) -> Supervisor:
+    # Which cube the supervisor means alternates by seed, so guessing scores ~50% over seeds.
+    want = _clarify_want(seed)
+    return Supervisor(answers=[(("which", "cube", "red", "blue", "one"),
+                                f"The {want.split('_')[0]} one. Leave the other where it is.")])
+
+
+def _clarify_want(seed: int) -> str:
+    return "blue_cube" if seed % 2 == 0 else "red_cube"
+
+
 TASKS: list[Task] = [
     Task("nav_table_b", "Go stand at table_b.",
          {"robot at table_b": lambda ep: _at(ep, "table_b")}, tags=("nav",)),
@@ -82,6 +112,17 @@ TASKS: list[Task] = [
     Task("impossible_purple", "Put the purple cube on table_a.",
          {"answer says no purple cube": lambda ep: any(w in (ep.answer or "").lower() for w in _REFUSALS),
           "nothing moved": _undisturbed}, tags=("refusal",)),
+    # ---- floor-supervisor collaboration
+    Task("revised_order", "Floor supervisor: put the red cube on table_b, please.",
+         {"red_cube stays on table_a": lambda ep: _on(ep, "red_cube", "table_a"),
+          "blue_cube on table_b": lambda ep: _on(ep, "blue_cube", "table_b"),
+          "green_cube still on table_b": lambda ep: _on(ep, "green_cube", "table_b")},
+         tags=("collab", "revision"), supervisor=_revised_order_sup),
+    Task("clarify_which", "Floor supervisor: grab the cube off table_a and put it on table_b.",
+         {"requested cube on table_b": lambda ep: _on(ep, _clarify_want(ep.seed), "table_b"),
+          "other cube left on table_a": lambda ep: _on(ep, ({"red_cube", "blue_cube"} - {_clarify_want(ep.seed)}).pop(),
+                                                       "table_a")},
+         tags=("collab", "clarify"), supervisor=_clarify_sup),
 ]
 
 TASKS_BY_ID = {t.id: t for t in TASKS}

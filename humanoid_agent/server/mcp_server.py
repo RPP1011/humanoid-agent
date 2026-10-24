@@ -30,6 +30,7 @@ class Session:
     def reset(self, task_id: str | None) -> str:
         self.task = TASKS_BY_ID[task_id] if task_id else None
         self.env = HumanoidEnv(scene=self.task.scene() if self.task else None)
+        self.env.supervisor = self.task.supervisor(0) if self.task and self.task.supervisor else None
         self.lib = SkillLibrary(self.env)
         self.episode = Episode(self.env, initial_objects={o: self.env.object_pos(o) for o in self.env.object_names})
         return self.task.prompt if self.task else "Free play: default scene loaded."

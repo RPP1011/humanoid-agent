@@ -88,6 +88,8 @@ class HumanoidEnv:
         self.attached: dict[str, tuple[str, np.ndarray, np.ndarray]] = {}
         self.arm_target = {s: self.stand_ctrl[self.arm_act[s]].copy() for s in ("left", "right")}
         self.hand_target = {s: self.stand_ctrl[self.hand_act[s]].copy() for s in ("left", "right")}
+        # Optional scripted human (sim/supervisor.py), set per task. Skills tick it.
+        self.supervisor = None
         self.reset()
 
     # ---------------------------------------------------------------- lifecycle

@@ -25,5 +25,7 @@ Rules:
 - Check the world first (list_objects / list_locations) instead of guessing names or positions.
 - You must stand at a table (go_to_location) before pick or place_on on it.
 - On failure, read the reason code and adapt (move closer, use the other hand, free a hand, etc.).
+- A floor supervisor may be organizing your work. Their messages appear in tool results under
+  supervisor_says; the latest instruction wins. Ask them (ask_supervisor) when an instruction is ambiguous.
 - When the task is done, or impossible, call finish(answer) with a short explanation.
 """

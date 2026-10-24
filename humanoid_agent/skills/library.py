@@ -41,6 +41,11 @@ def skill(fn):
         if self.env.is_fallen() and res.success:
             res = SkillResult(False, "fallen: robot fell during skill", res.data)
         res.sim_time_s = round(self.env.time - t0, 3)
+        sup = self.env.supervisor
+        if sup is not None:
+            sup.tick(self.env)
+            if said := sup.drain():
+                res.data["supervisor_says"] = said
         self.log.append({"skill": fn.__name__, "args": args, "kwargs": kwargs, **res.to_dict()})
         return res
 
@@ -190,6 +195,24 @@ class SkillLibrary:
         env.set_ego_pitch(pitch)
         env.step()
         return SkillResult(True, data={"yaw": round(yaw, 3), "camera_pitch": round(pitch, 3)})
+
+    # ================================================================ talking to people
+    @skill
+    def ask_supervisor(self, question: str) -> SkillResult:
+        sup = self.env.supervisor
+        if sup is None:
+            return SkillResult(False, "no_supervisor: nobody is here to ask")
+        answer = sup.ask(self.env, question)
+        self.env.step(int(2.0 / self.env.control_dt))  # a spoken exchange is not free
+        return SkillResult(True, data={"answer": answer})
+
+    @skill
+    def report(self, message: str) -> SkillResult:
+        sup = self.env.supervisor
+        if sup is None:
+            return SkillResult(False, "no_supervisor: nobody is here to hear it")
+        sup.hear(self.env, message)
+        return SkillResult(True)
 
     # ================================================================ manipulation primitives
     @skill
