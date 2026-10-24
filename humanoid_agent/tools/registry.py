@@ -58,6 +58,11 @@ TOOLS: list[ToolSpec] = [
                          "dx/dy shift the spot forward/left in metres.",
              {"surface": {"type": "string"}, "side": SIDE, "dx": _num("forward offset"), "dy": _num("left offset")},
              ["surface"], lambda L, surface, side=None, dx=0.0, dy=0.0: L.place_on(surface, side, dx, dy)),
+    ToolSpec("ask_supervisor", "Ask the floor supervisor a question (takes ~2 s). Their unprompted messages "
+                               "arrive in any tool result under supervisor_says.",
+             {"question": {"type": "string"}}, ["question"], lambda L, question: L.ask_supervisor(question)),
+    ToolSpec("report", "Tell the floor supervisor something (status, a problem, that you are done).",
+             {"message": {"type": "string"}}, ["message"], lambda L, message: L.report(message)),
     ToolSpec("reach", "Low-level: move a palm to world point (x, y, z).",
              {"side": SIDE, "x": _num("m"), "y": _num("m"), "z": _num("m")}, ["side", "x", "y", "z"],
              lambda L, side, x, y, z: L.reach(side, x, y, z)),

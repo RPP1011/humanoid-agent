@@ -24,7 +24,7 @@ class AnthropicAgent:
         import anthropic
 
         self.client = anthropic.Anthropic()
-        self.model = model or os.environ.get("HUMANOID_AGENT_MODEL", "claude-sonnet-5-5")
+        self.model = model or os.environ.get("HUMANOID_AGENT_MODEL", "claude-haiku-5-5")
         self.max_tokens = max_tokens
         self.name = f"anthropic:{self.model}"
         self.tools = [{"name": t.name, "description": t.description, "input_schema": t.input_schema()}

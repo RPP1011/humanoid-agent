@@ -45,6 +45,10 @@ so the sub-call is not logged as a separate planner action. Internal helpers
 | Locomotion | `go_to_location`, `walk_to`, `turn_to`, `look_at` | `_walk_to`: turn-then-drive P-controller, 2 cm / 0.05 rad tolerance, no obstacle avoidance |
 | Primitives | `reach`, `grasp`, `release`, `retract` | `grasp` = magic attach if object within 8 cm of palm |
 | Composites | `pick`, `place_on` | what planners should normally use |
+| People | `ask_supervisor`, `report` | `no_supervisor` if the task has none; asking costs 2 s of sim time |
+
+When `env.supervisor` is set (see `sim/supervisor.py`), the `@skill` wrapper ticks it after
+every skill and attaches anything it said to that result as `data["supervisor_says"]`.
 
 ### How `pick` works
 choose side (object's side of the body, else the free hand) → `_align_for`
