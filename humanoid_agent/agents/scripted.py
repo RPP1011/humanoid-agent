@@ -28,6 +28,17 @@ PLANS: dict[str, list[tuple[str, dict]]] = {
         ("pick", {"obj": "green_cube"}),
         ("go_to_location", {"name": "table_a"}), ("place_on", {"surface": "table_a"}),
     ],
+    # Seed-0 branches only: a fixed plan cannot react, so it encodes what seed 0's supervisor says.
+    "revised_order": [
+        ("go_to_location", {"name": "table_a"}), ("pick", {"obj": "red_cube"}),
+        ("place_on", {"surface": "table_a"}), ("pick", {"obj": "blue_cube"}),
+        ("go_to_location", {"name": "table_b"}), ("place_on", {"surface": "table_b"}),
+    ],
+    "clarify_which": [
+        ("ask_supervisor", {"question": "Which cube on table_a do you mean, red or blue?"}),
+        ("go_to_location", {"name": "table_a"}), ("pick", {"obj": "blue_cube"}),
+        ("go_to_location", {"name": "table_b"}), ("place_on", {"surface": "table_b"}),
+    ],
     "which_on_b": [("list_objects", {}), ("finish", {"answer": "green"})],
     "impossible_purple": [("list_objects", {}), ("finish", {"answer": "There is no purple cube in the room."})],
 }

@@ -53,3 +53,12 @@ Thin wrapper around `MjModel`/`MjData` that skills drive.
   walk *through* tables today (verified: `walk_to(2.0, 0.0)` from start passes
   through `table_a` and reports success). Don't build tests that rely on
   collisions blocking navigation until locomotion is physical.
+
+## supervisor.py
+
+`Supervisor` is a **placeholder human** (`is_physical=False`): no body, just
+one-shot `Rule(when(env), say)` triggers plus a keyword answer table for
+`ask_supervisor`. It is deterministic on purpose so collaboration tasks stay
+gradeable on sim state. It is heard only between skills; a rule that becomes
+true mid-skill is delivered when that skill returns. `transcript` (who said
+what, at what sim time) goes into every eval row.

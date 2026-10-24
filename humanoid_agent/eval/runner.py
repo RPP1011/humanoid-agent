@@ -1,7 +1,7 @@
 """Eval runner.
 
     python -m humanoid_agent.eval.runner --agent scripted
-    python -m humanoid_agent.eval.runner --agent anthropic --model claude-sonnet-5-5 --seeds 3
+    python -m humanoid_agent.eval.runner --agent anthropic --model claude-haiku-5-5 --seeds 3
     python -m humanoid_agent.eval.runner --agent openai --model qwen3-vl --base-url http://localhost:8000/v1
 
 Writes runs/<stamp>_<agent>/results.jsonl (one row per episode, full skill log)
@@ -27,7 +27,7 @@ from ..tools.registry import call_tool
 from .tasks import TASKS, TASKS_BY_ID, Episode, Task
 
 PLANNER_CODES = {"unknown_tool", "bad_args", "unknown_object", "unknown_location", "unknown_target",
-                 "unknown_surface", "not_holding", "hand_full", "budget"}
+                 "unknown_surface", "not_holding", "hand_full", "budget", "no_supervisor"}
 
 
 def _jittered(task: Task, seed: int, jitter: float):
@@ -43,8 +43,9 @@ def _jittered(task: Task, seed: int, jitter: float):
 
 def run_episode(agent, task: Task, seed: int, out_dir: Path, jitter: float = 0.03) -> dict:
     env = HumanoidEnv(scene=_jittered(task, seed, jitter))
+    env.supervisor = task.supervisor(seed) if task.supervisor else None
     lib = SkillLibrary(env)
-    ep = Episode(env, initial_objects={o: env.object_pos(o) for o in env.object_names})
+    ep = Episode(env, seed=seed, initial_objects={o: env.object_pos(o) for o in env.object_names})
     n_calls = 0
 
     def call(name: str, args: dict) -> SkillResult:
@@ -76,6 +77,7 @@ def run_episode(agent, task: Task, seed: int, out_dir: Path, jitter: float = 0.0
         "tool_calls": n_calls, "sim_time_s": round(env.time, 2), "wall_s": round(time.time() - t0, 2),
         "answer": ep.answer, "error": error,
         "locomotion_is_physical": env.loco.is_physical,
+        "transcript": env.supervisor.transcript if env.supervisor else None,
         "skill_failures": [r["code"] for r in lib.log if not r.get("success", True)],
         "log": [{k: v for k, v in r.items() if k not in ("data",)} for r in lib.log],
     }

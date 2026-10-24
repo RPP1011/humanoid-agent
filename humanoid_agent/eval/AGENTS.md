@@ -19,6 +19,11 @@ held), `_at(location, tol=0.1)`, `_undisturbed(tol=0.02)`, `_answer_has(*words)`
 | `swap` | multi-step | red on b and green on a |
 | `which_on_b` | query | answer contains "green" and nothing moved |
 | `impossible_purple` | honest refusal | nothing moved and answer matches a refusal phrase |
+| `revised_order` | supervisor changes the order mid-task (on pick for even seeds, at table_b for odd) | red on table_a, blue and green on table_b |
+| `clarify_which` | ambiguous order; supervisor's choice alternates by seed | the wanted cube on table_b, the other still on table_a |
+
+Collaboration tasks set `Task.supervisor = (seed) -> Supervisor`. Their scripted plans
+only cover seed 0, since a fixed plan cannot react to what is said.
 
 Adding a task: append to `TASKS`, give it a plan in `agents/scripted.py`
 (the smoke test runs every task), and keep the check on state. Answer checks

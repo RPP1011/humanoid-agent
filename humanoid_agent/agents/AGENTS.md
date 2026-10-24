@@ -18,7 +18,7 @@ because `tests/test_smoke.py` runs all of them.
 
 ## llm.py
 - `AnthropicAgent` — Messages API with tool use. Model from arg, else
-  `HUMANOID_AGENT_MODEL`, else `claude-sonnet-5-5`. Images from `get_frame` go
+  `HUMANOID_AGENT_MODEL`, else `claude-haiku-5-5`. Images from `get_frame` go
   inside the `tool_result` content. A turn with no tool calls is treated as
   `finish(text)`.
 - `OpenAICompatAgent` — any OpenAI-compatible server with tool calling (vLLM,
