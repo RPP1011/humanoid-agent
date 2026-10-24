@@ -1,0 +1,79 @@
+# skills/ — the planner's action space
+
+`SkillLibrary(env)` holds every action a planner can take. `types.py` defines
+`SkillResult`, the only thing a planner ever sees.
+
+## SkillResult
+
+```python
+SkillResult(success: bool, reason: str = "ok", data: dict = {}, sim_time_s: float = 0.0)
+```
+
+`reason` is `"<code>: <human detail>"`, e.g. `"unreachable: ik residual 0.140m; move closer"`.
+`.code` is the prefix before `:`. The eval runner groups failures by code and
+splits them into planner vs skill errors using `eval/runner.py:PLANNER_CODES`,
+so **codes are an API**: don't rename them casually, and add new
+planner-caused codes to that set.
+
+Current codes: `ok`, `fallen`, `bad_args`, `unknown_location`, `unknown_target`,
+`unknown_object`, `unknown_surface`, `unreachable`, `tracking`, `too_far`,
+`hand_full`, `not_holding`, `retract_blocked`, `no_free_space`, `placement`,
+`timeout`; composites prefix sub-step failures: `approach_*`, `descend_*`,
+`align_*` (e.g. `approach_tracking`).
+
+## The `@skill` decorator
+
+Every public skill method is wrapped by `@skill`, which:
+
+1. refuses to run if the robot has fallen;
+2. converts `KeyError`/`ValueError` into `bad_args` (other exceptions propagate
+   and end the episode as an agent error, so don't let them escape);
+3. downgrades success to `fallen` if the robot fell during the skill;
+4. stamps `sim_time_s` and appends a log entry to `self.log` (the eval log).
+
+`skills()` discovers skills by the `is_skill` attribute it sets.
+
+Composites call other skills' bodies through `SkillLibrary.grasp.__wrapped__(self, ...)`
+so the sub-call is not logged as a separate planner action. Internal helpers
+(`_reach`, `_retract`, `_walk_to`, `_align_for`, `_step_to`) are undecorated.
+
+## Skill groups
+
+| Group | Skills | Notes |
+|---|---|---|
+| Query | `get_state`, `list_objects`, `list_locations`, `get_frame` | `list_objects` is ground-truth perception; `get_frame` returns PNG bytes under `data["png_bytes"]` |
+| Locomotion | `go_to_location`, `walk_to`, `turn_to`, `look_at` | `_walk_to`: turn-then-drive P-controller, 2 cm / 0.05 rad tolerance, no obstacle avoidance |
+| Primitives | `reach`, `grasp`, `release`, `retract` | `grasp` = magic attach if object within 8 cm of palm |
+| Composites | `pick`, `place_on` | what planners should normally use |
+
+### How `pick` works
+choose side (object's side of the body, else the free hand) → `_align_for`
+side-steps so the object sits at (`REACH_FWD`=0.30, ±`REACH_LAT`=0.15) in the
+body frame (fails `too_far` if that's >0.5 m away: walk first) → reach 10 cm
+above → descend to 4.5 cm above → magic grasp → lift 12 cm → carry pose.
+Lift/carry failures are reported in `data` but don't fail the skill.
+
+### How `place_on` works
+`_free_spot` grid-searches the table (3 cm grid, 6 cm edge margin) for the point
+closest to the preferred spot (30 cm ahead in front of the placing hand, plus
+`dx`/`dy`) that is ≥15 cm from every other object and within 45 cm of it →
+align → approach from 10 cm above → descend so the object sits 1 cm above the
+surface → release → `_retract` → verify with `_support_of` that it landed on the
+requested table (`placement` failure otherwise).
+
+### Why `_reach` and `_retract` look the way they do
+`_reach` lifts to target height near the body before moving horizontally, and
+streams IK waypoints every 2 cm at control rate, because straight joint-space
+moves sweep through table tops. `_retract` lifts, pulls back behind the table
+edge, lowers beside the hip, then snaps to rest, because going straight to the
+rest pose knocks objects off the table.
+
+## Rules for new skills
+
+- Blocking, bounded by a `timeout_s` in **sim** time, always return a
+  `SkillResult`; validate names up front and return `unknown_*` codes.
+- Make failure reasons actionable for a planner ("walk closer first", "free a
+  hand"). That text is the only feedback an LLM gets.
+- Keep returned numbers rounded and payloads small; images only via `png_bytes`.
+- Register it in `tools/registry.py`, and if it is meant for planners, add a
+  scripted plan/task that exercises it.
