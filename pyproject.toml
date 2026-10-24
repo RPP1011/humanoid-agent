@@ -1,0 +1,29 @@
+[project]
+name = "humanoid-agent"
+version = "0.1.0"
+description = "LLM-over-skills control of a simulated Unitree G1 in MuJoCo, with an MCP server and eval harness."
+requires-python = ">=3.10"
+dependencies = [
+    "mujoco>=3.3",
+    "numpy",
+    "pillow",
+    "mcp>=2.3",   # tested on 2.3.0 (low-level Server API changed in 2.x)
+    "anyio",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic"]
+openai = ["openai"]          # any OpenAI-compatible server: vLLM, llama.cpp, SGLang, Ollama
+policy = ["onnxruntime"]     # for a learned locomotion policy
+dev = ["pytest"]
+
+[project.scripts]
+humanoid-mcp = "humanoid_agent.server.mcp_server:main"
+humanoid-eval = "humanoid_agent.eval.runner:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["humanoid_agent*"]

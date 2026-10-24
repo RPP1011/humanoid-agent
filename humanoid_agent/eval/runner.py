@@ -1,0 +1,159 @@
+"""Eval runner.
+
+    python -m humanoid_agent.eval.runner --agent scripted
+    python -m humanoid_agent.eval.runner --agent anthropic --model claude-sonnet-5-5 --seeds 3
+    python -m humanoid_agent.eval.runner --agent openai --model qwen3-vl --base-url http://localhost:8000/v1
+
+Writes runs/<stamp>_<agent>/results.jsonl (one row per episode, full skill log)
+and summary.md (per-task success, and failure codes split by skill vs planner).
+"""
+from __future__ import annotations
+
+import argparse
+import collections
+import dataclasses
+import json
+import random
+import time
+from pathlib import Path
+
+from PIL import Image
+
+from ..agents.base import EpisodeDone
+from ..sim.env import HumanoidEnv
+from ..skills.library import SkillLibrary
+from ..skills.types import SkillResult
+from ..tools.registry import call_tool
+from .tasks import TASKS, TASKS_BY_ID, Episode, Task
+
+PLANNER_CODES = {"unknown_tool", "bad_args", "unknown_object", "unknown_location", "unknown_target",
+                 "unknown_surface", "not_holding", "hand_full", "budget"}
+
+
+def _jittered(task: Task, seed: int, jitter: float):
+    scene = task.scene()
+    if seed == 0 or jitter <= 0:
+        return scene
+    rng = random.Random(seed)
+    scene.objects = [dataclasses.replace(o, pos=(o.pos[0] + rng.uniform(-jitter, jitter),
+                                                  o.pos[1] + rng.uniform(-jitter, jitter), o.pos[2]))
+                     for o in scene.objects]
+    return scene
+
+
+def run_episode(agent, task: Task, seed: int, out_dir: Path, jitter: float = 0.03) -> dict:
+    env = HumanoidEnv(scene=_jittered(task, seed, jitter))
+    lib = SkillLibrary(env)
+    ep = Episode(env, initial_objects={o: env.object_pos(o) for o in env.object_names})
+    n_calls = 0
+
+    def call(name: str, args: dict) -> SkillResult:
+        nonlocal n_calls
+        n_calls += 1
+        if name == "finish":
+            ep.answer = str(args.get("answer", ""))
+            lib.log.append({"skill": "finish", "kwargs": args, "success": True, "reason": "ok", "code": "ok"})
+            raise EpisodeDone()
+        if n_calls > task.max_tool_calls:
+            lib.log.append({"skill": name, "kwargs": args, "success": False, "reason": "budget", "code": "budget"})
+            raise EpisodeDone()
+        return call_tool(lib, name, args)
+
+    t0 = time.time()
+    error = None
+    try:
+        agent.run(task.id, task.prompt, call)
+    except EpisodeDone:
+        pass
+    except Exception as e:  # agent/API crash is a result, not a harness crash
+        error = f"{type(e).__name__}: {e}"
+    ok = bool(task.success(ep)) and error is None
+
+    tag = f"{task.id}_s{seed}"
+    Image.fromarray(env.render("overview")).save(out_dir / f"{tag}_final.png")
+    return {
+        "task": task.id, "seed": seed, "agent": agent.name, "success": ok,
+        "tool_calls": n_calls, "sim_time_s": round(env.time, 2), "wall_s": round(time.time() - t0, 2),
+        "answer": ep.answer, "error": error,
+        "locomotion_is_physical": env.loco.is_physical,
+        "skill_failures": [r["code"] for r in lib.log if not r.get("success", True)],
+        "log": [{k: v for k, v in r.items() if k not in ("data",)} for r in lib.log],
+    }
+
+
+def summarize(rows: list[dict]) -> str:
+    by_task = collections.defaultdict(list)
+    for r in rows:
+        by_task[r["task"]].append(r)
+    lines = ["| task | success | mean tool calls | mean sim s |", "|---|---|---|---|"]
+    for t, rs in by_task.items():
+        sr = sum(r["success"] for r in rs) / len(rs)
+        lines.append(f"| {t} | {sr:.0%} ({sum(r['success'] for r in rs)}/{len(rs)}) | "
+                     f"{sum(r['tool_calls'] for r in rs) / len(rs):.1f} | "
+                     f"{sum(r['sim_time_s'] for r in rs) / len(rs):.1f} |")
+    total = sum(r["success"] for r in rows)
+    lines.append(f"\n**Overall: {total}/{len(rows)}**")
+    codes = collections.Counter(c for r in rows for c in r["skill_failures"])
+    if codes:
+        planner = {c: n for c, n in codes.items() if c in PLANNER_CODES}
+        skill = {c: n for c, n in codes.items() if c not in PLANNER_CODES}
+        lines.append(f"\nFailure codes attributed to planner: {planner or '{}'}")
+        lines.append(f"Failure codes attributed to skills/sim: {skill or '{}'}")
+    errs = [r for r in rows if r["error"]]
+    if errs:
+        lines.append(f"\nAgent errors: {len(errs)} (first: {errs[0]['error']})")
+    if rows and not rows[0]["locomotion_is_physical"]:
+        lines.append("\n_Locomotion is the kinematic placeholder: walking results are not physical._")
+    return "\n".join(lines)
+
+
+def make_agent(args):
+    if args.agent == "scripted":
+        from ..agents.scripted import ScriptedAgent
+        return ScriptedAgent()
+    if args.agent == "anthropic":
+        from ..agents.llm import AnthropicAgent
+        return AnthropicAgent(model=args.model)
+    if args.agent == "openai":
+        from ..agents.llm import OpenAICompatAgent
+        if not args.model:
+            raise SystemExit("--model is required for --agent openai")
+        return OpenAICompatAgent(model=args.model, base_url=args.base_url, send_images=not args.no_images)
+    raise SystemExit(f"unknown agent {args.agent}")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--agent", default="scripted", choices=["scripted", "anthropic", "openai"])
+    ap.add_argument("--model")
+    ap.add_argument("--base-url")
+    ap.add_argument("--no-images", action="store_true")
+    ap.add_argument("--tasks", nargs="*", help="task ids (default: all)")
+    ap.add_argument("--seeds", type=int, default=1, help="seed 0 = canonical layout; >0 jitters objects")
+    ap.add_argument("--jitter", type=float, default=0.03, help="object xy jitter (m) for seeds > 0")
+    ap.add_argument("--out", default="runs")
+    args = ap.parse_args()
+
+    agent = make_agent(args)
+    tasks = [TASKS_BY_ID[t] for t in args.tasks] if args.tasks else TASKS
+    out = Path(args.out) / f"{time.strftime('%Y%m%d-%H%M%S')}_{agent.name.replace(':', '_').replace('/', '_')}"
+    out.mkdir(parents=True, exist_ok=True)
+
+    rows = []
+    with open(out / "results.jsonl", "w") as f:
+        for task in tasks:
+            for seed in range(args.seeds):
+                row = run_episode(agent, task, seed, out, args.jitter)
+                rows.append(row)
+                f.write(json.dumps(row, default=str) + "\n")
+                f.flush()
+                mark = "PASS" if row["success"] else "FAIL"
+                print(f"[{mark}] {task.id} seed={seed} calls={row['tool_calls']} "
+                      f"fails={row['skill_failures']} answer={row['answer']!r}")
+    summary = summarize(rows)
+    (out / "summary.md").write_text(summary + "\n")
+    print("\n" + summary + f"\n\nResults: {out}")
+
+
+if __name__ == "__main__":
+    main()
