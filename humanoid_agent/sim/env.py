@@ -92,7 +92,20 @@ class HumanoidEnv:
         for b in self.scene.bags:
             self._support_name.update({g: b.name for g in range(m.ngeom)
                                        if (mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g) or "").startswith(f"{b.name}_cell")})
+        for f in self.scene.fridges:
+            for g in range(m.ngeom):
+                n = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g) or ""
+                if n.startswith(f"{f.name}_"):
+                    shelf = next((s for s in f.shelf_names if n == f"{f.name}_{s}"), None)
+                    self._support_name[g] = f"{f.name}_{shelf}" if shelf else f.name
         self._support_name.update({g: o for o, g in self._obj_geom.items()})
+        # Fridge doors are kinematic: the hinge angle is rewritten every substep, so
+        # the arm can't shove a door open and a closed door really blocks the inside.
+        self._door_qadr = {f.name: m.jnt_qposadr[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, f"{f.name}_door")]
+                           for f in self.scene.fridges}
+        self._door_dadr = {f.name: m.jnt_dofadr[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, f"{f.name}_door")]
+                           for f in self.scene.fridges}
+        self.door_angle = {f.name: 0.0 for f in self.scene.fridges}
         self._obj_body = {o: int(m.geom_bodyid[g]) for o, g in self._obj_geom.items()}
         self._bag_qadr = np.array([m.jnt_qposadr[j] for j in range(m.njnt)
                                    if any((mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_JOINT, j) or "").startswith(f"{b.name}_cell")
@@ -110,6 +123,9 @@ class HumanoidEnv:
     def reset(self) -> None:
         mujoco.mj_resetDataKeyframe(self.model, self.data, self._key)
         self.data.qpos[self._bag_qadr] = 0.0  # keyframe only covers the robot; un-dent the bags
+        for f in self.door_angle:
+            self.door_angle[f] = 0.0
+            self.data.qpos[self._door_qadr[f]] = 0.0
         # Keyframe only covers the robot; restore object poses from the spec.
         for o in self.scene.objects:
             a = self._obj_qadr[o.name]
@@ -139,6 +155,7 @@ class HumanoidEnv:
                 self.loco.pre_physics(self)
                 mujoco.mj_step(self.model, self.data)
                 self.loco.post_physics(self)
+                self._apply_doors()
                 self._apply_attachments()
             mujoco.mj_forward(self.model, self.data)
             for o in [o for o in self._ghosts
@@ -209,6 +226,27 @@ class HumanoidEnv:
         z, owner = self.surface_below(p[0], p[1], p[2], exclude=name)
         # A cube balanced on an edge or corner sits up to half*sqrt(3) above what holds it.
         return owner if p[2] - z < 1.8 * half + 0.01 else "air"
+
+    def fridge(self, name: str):
+        return next((f for f in self.scene.fridges if f.name == name), None)
+
+    def fridge_of(self, support: str):
+        """The fridge a support name (shelf or carcass) belongs to, or None."""
+        return next((f for f in self.scene.fridges
+                     if support == f.name or support in (f"{f.name}_{s}" for s in f.shelf_names)), None)
+
+    def door_is_open(self, fridge: str) -> bool:
+        return self.door_angle[fridge] > self.fridge(fridge).open_angle - 0.3
+
+    def hidden(self, name: str) -> bool:
+        """Inside a closed fridge: a real camera could not see it."""
+        f = self.fridge_of(self.support_of(name))
+        return f is not None and self.door_angle[f.name] < 0.3
+
+    def _apply_doors(self) -> None:
+        for f, a in self.door_angle.items():
+            self.data.qpos[self._door_qadr[f]] = a
+            self.data.qvel[self._door_dadr[f]] = 0.0
 
     def palm_pos(self, side: str) -> np.ndarray:
         b = self.hand_body[side]

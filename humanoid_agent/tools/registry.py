@@ -33,7 +33,8 @@ def _num(desc: str) -> dict:
 
 
 TOOLS: list[ToolSpec] = [
-    ToolSpec("get_state", "Robot base pose (x, y metres; yaw radians), what each hand holds, sim time.",
+    ToolSpec("get_state", "Robot base pose (x, y metres; yaw radians), what each hand holds, sim time, "
+                          "and whether each fridge door is open.",
              {}, [], lambda L: L.get_state()),
     ToolSpec("list_objects", "All objects with world position, what they rest on (a table, the bean bag, another "
                              "object, floor), tilt from upright in degrees, distance from robot, and holder; plus the "
@@ -56,16 +57,21 @@ TOOLS: list[ToolSpec] = [
     ToolSpec("pick", "Pick up an object within arm's reach (stand at the table first). Side auto-chosen if omitted.",
              {"obj": {"type": "string"}, "side": SIDE}, ["obj"],
              lambda L, obj, side=None: L.pick(obj, side)),
-    ToolSpec("place_on", "Place a held object on a surface: a table (auto-picks a spot clear of other objects near the "
+    ToolSpec("place_on", "Place a held object on a surface: a table or fridge shelf (auto-picks a spot clear of other objects near the "
                          "robot), a bean bag (aims at its centre), or another object to stack on top of it (aims at its "
                          "centre). Side-steps if needed; stand at the table first. The object is let go and physics "
                          "decides whether it stays: check the returned tilt_deg. "
                          "Name the object with obj (required if both hands are full). "
                          "dx/dy shift the spot forward/left in metres.",
-             {"surface": {"type": "string", "description": "table, bag or object name"},
+             {"surface": {"type": "string", "description": "table, fridge shelf, bag or object name"},
               "obj": {"type": "string", "description": "held object to place"},
               "side": SIDE, "dx": _num("forward offset"), "dy": _num("left offset")},
              ["surface"], lambda L, surface, obj=None, side=None, dx=0.0, dy=0.0: L.place_on(surface, side, dx, dy, obj)),
+    ToolSpec("open_door", "Open a fridge's door (you must be near it; needs one free hand). The robot steps back "
+                          "while the door swings, then returns to the fridge. Its contents are hidden while it is closed.",
+             {"fridge": {"type": "string"}}, ["fridge"], lambda L, fridge: L.open_door(fridge)),
+    ToolSpec("close_door", "Close a fridge's door. The robot steps back out of the door's swing to do it.",
+             {"fridge": {"type": "string"}}, ["fridge"], lambda L, fridge: L.close_door(fridge)),
     ToolSpec("ask_supervisor", "Ask the floor supervisor a question (takes ~2 s). Their unprompted messages "
                                "arrive in any tool result under supervisor_says.",
              {"question": {"type": "string"}}, ["question"], lambda L, question: L.ask_supervisor(question)),

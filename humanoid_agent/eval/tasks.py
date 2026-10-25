@@ -11,7 +11,7 @@ from typing import Callable
 import numpy as np
 
 from ..sim.env import HumanoidEnv
-from ..sim.scene import BeanBag, Obj, SceneSpec, default_scene
+from ..sim.scene import BeanBag, Obj, SceneSpec, default_scene, kitchen_scene
 from ..sim.supervisor import Rule, Supervisor
 
 
@@ -43,7 +43,9 @@ class Task:
 
 def _on(ep: Episode, obj: str, table: str) -> bool:
     env = ep.env
-    t = next(t for t in env.scene.tables if t.name == table)
+    t = next((t for t in env.scene.tables if t.name == table), None)
+    if t is None:  # fridge shelves share a footprint: ask what is directly underneath
+        return env.support_of(obj) == table
     p = env.object_pos(obj)
     return (obj not in env.attached and abs(p[0] - t.pos[0]) <= t.size[0]
             and abs(p[1] - t.pos[1]) <= t.size[1] and p[2] > t.height - 0.02)
@@ -116,6 +118,17 @@ def _tower(ep: Episode, base: str, n: int) -> bool:
     return count >= n and all(env.tilt_deg(o) < 20 for o in env.object_names if on[o] != "floor")
 
 
+def _door_closed(ep: Episode, fridge: str = "fridge") -> bool:
+    return ep.env.door_angle[fridge] < 0.05
+
+
+def _others_undisturbed(*moved: str):
+    def check(ep: Episode, tol: float = 0.02) -> bool:
+        return all(np.linalg.norm(ep.env.object_pos(o) - p) < tol
+                   for o, p in ep.initial_objects.items() if o not in moved)
+    return check
+
+
 TASKS: list[Task] = [
     Task("nav_table_b", "Go stand at table_b.",
          {"robot at table_b": lambda ep: _at(ep, "table_b")}, tags=("nav",)),
@@ -150,6 +163,17 @@ TASKS: list[Task] = [
     Task("bean_bag_tower", "Stack all three cubes into a single tower on the bean bag. It has to stay standing.",
          {"tower of 3 on bean_bag after 5 s": lambda ep: _tower(ep, "bean_bag", 3)},
          scene=_bean_bag_scene, tags=("pnp", "multi", "soft"), settle_s=5.0),
+    # ---- household: articulated fridge. The door is never mentioned: closing it is on the robot.
+    Task("fridge_soda", "Get the soda from the fridge and put it on the kitchen table.",
+         {"soda_can on kitchen_table": lambda ep: _on(ep, "soda_can", "kitchen_table"),
+          "fridge door closed": _door_closed,
+          "nothing else moved": _others_undisturbed("soda_can")},
+         scene=kitchen_scene, tags=("household", "articulated")),
+    Task("fridge_put_milk_away", "Put the milk away in the fridge, on the top shelf.",
+         {"milk on fridge_top_shelf": lambda ep: _on(ep, "milk", "fridge_top_shelf"),
+          "fridge door closed": _door_closed,
+          "nothing else moved": _others_undisturbed("milk")},
+         scene=kitchen_scene, tags=("household", "articulated")),
 ]
 
 TASKS_BY_ID = {t.id: t for t in TASKS}
