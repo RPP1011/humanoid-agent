@@ -33,7 +33,7 @@ pip install -e ".[dev]"                      # add ,anthropic / ,openai / ,polic
 # Rendering backend MUST work before anything imports sim/env.py.
 #   GPU: MUJOCO_GL=egl (env.py defaults to this if unset)
 #   CPU: MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa   (apt: libosmesa6)
-MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa pytest -q            # 32 tests, ~150 s on CPU
+MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa pytest -q            # 33 tests, ~150 s on CPU
 python -m humanoid_agent.eval.runner --agent scripted --seeds 5  # harness check
 python -m humanoid_agent.server.mcp_server                        # MCP over stdio
 ```

@@ -216,6 +216,12 @@ class SkillLibrary:
                 r.data["detour_via"] = [[round(float(v), 2) for v in w] for w in route]
             return r
         env, loco = self.env, self.env.loco
+        if pos_tol < np.hypot(gx - x, gy - y) < self.SHORT_STEP:
+            # Turning to face a goal a few cm away swings the arms through whatever the robot
+            # stands at (it knocked a can out of an open fridge): side-step without turning.
+            r = self._step_to(gx, gy, env.base_pose()[2], timeout_s)
+            if not r.success:
+                return r
         t_end = env.time + timeout_s
         while env.time < t_end:
             x, y, yaw = env.base_pose()
@@ -412,7 +418,9 @@ class SkillLibrary:
                 out.append(f.door_footprint(self.env.door_angle[f.name]))
         return out
 
-    PERSON_STOP = 0.9     # stop if a person is this close (base to body centre) in the walking cone
+    SHORT_STEP = 0.35  # goals closer than this are side-stepped to, not walked to (m)
+
+    PERSON_STOP = 0.9    # stop if a person is this close (base to body centre) in the walking cone
     PERSON_CONE = 1.05    # rad half-angle of that cone (~60 deg)
     PERSON_PASS = 0.6     # ...or if the predicted closest approach over the next second is below this
     PERSON_LOOK = 1.2     # (only for people this close: farther ones are reassessed as they approach)

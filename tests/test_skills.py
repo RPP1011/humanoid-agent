@@ -3,6 +3,7 @@ import os
 
 os.environ.setdefault("MUJOCO_GL", "egl")
 
+import numpy as np
 import pytest
 
 from humanoid_agent.eval.tasks import TASKS_BY_ID, Episode
@@ -79,3 +80,15 @@ def test_closed_fridge_hides_and_blocks_its_contents(kitchen):
     assert kitchen.open_door("fridge").success
     assert "soda_can" in {o["name"] for o in kitchen.list_objects().data["objects"]}
     assert kitchen.get_state().data["doors"] == {"fridge": "open"}
+
+
+def test_short_moves_at_an_open_fridge_do_not_sweep_the_shelves():
+    # Turning to face a goal 25 cm away swung an arm through the open fridge and threw the can out.
+    from humanoid_agent.sim.scene import kitchen_scene
+    lib = SkillLibrary(HumanoidEnv(scene=kitchen_scene()))
+    assert lib.go_to_location("fridge").success and lib.open_door("fridge").success
+    before = lib.env.object_pos("soda_can")
+    x, y, yaw = lib.env.base_pose()
+    assert lib.walk_to(x + 0.02, y + 0.26, yaw).success
+    assert lib.go_to_location("fridge").success
+    assert np.linalg.norm(lib.env.object_pos("soda_can") - before) < 0.01

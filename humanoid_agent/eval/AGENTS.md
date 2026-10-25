@@ -77,6 +77,12 @@ are substring matches; be aware they are lenient (see below).
   when locomotion is the placeholder.
 
 ## Caveats when reading results
+- Known skill issues (2026-10-25): the scripted `swap` plan fails seeds 3 and 4 on main
+  (`place_on table_a` picks a spot whose stance is too deep into the table), and picking
+  from a table's far side (the `deep` switch) can knock or flip a cube already standing
+  near the usual side. Neither is a planner error.
+- Under `camera`, `list_objects` positions can be stale: a cube knocked off out of view
+  is still listed where it was, so a planner can honestly believe a task is done.
 - Attribution is by code only. `too_far` (didn't walk close enough) is
   arguably a planner error but counts as skill/sim; `unreachable` is ambiguous.
 - `which_on_b` passes for any answer containing "green" (including "red, blue,
