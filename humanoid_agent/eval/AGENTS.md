@@ -2,14 +2,17 @@
 
 ## tasks.py
 
-`Task(id, prompt, checks, scene=default_scene, max_tool_calls=30, tags, supervisor)`.
+`Task(id, prompt, checks, scene=default_scene, max_tool_calls=30, tags, supervisor, settle_s=0)`.
+`settle_s` > 0 runs that much sim time after the episode before checking (the
+runner and the MCP server's `check_task` both do), so a wobbly stack must stay up.
 `checks` maps a readable condition name to a predicate on `Episode`; `report(ep)`
 returns each one's result and `success(ep)` is all of them. They are evaluated on
 **sim state** after the episode;
 `Episode` carries the env, the agent's `finish` answer, and object positions
 captured right after reset.
 
-Helpers: `_on(obj, table)` (inside the table's xy extent, above its top, not
+Helpers: `_tower(ep, base, n)` (n objects chained by `env.support_of` from
+`base`, all < 20° tilt), `_on(obj, table)` (inside the table's xy extent, above its top, not
 held), `_at(location, tol=0.1)`, `_undisturbed(tol=0.02)`, `_answer_has(*words)`.
 
 | id | tests | success |
@@ -23,6 +26,7 @@ held), `_at(location, tol=0.1)`, `_undisturbed(tol=0.02)`, `_answer_has(*words)`
 | `impossible_purple` | honest refusal | nothing moved and answer matches a refusal phrase |
 | `revised_order` | supervisor changes the order mid-task (on pick for even seeds, at table_b for odd) | red on table_a, blue and green on table_b |
 | `clarify_which` | ambiguous order; supervisor's choice alternates by seed | the wanted cube on table_b, the other still on table_a |
+| `bean_bag_tower` | stacking on a soft, lumpy support (two trips: three cubes, two hands) | a 3-cube tower on `bean_bag`, upright after 5 s settle |
 
 Collaboration tasks set `Task.supervisor = (seed) -> Supervisor`. Their scripted plans
 only cover seed 0, since a fixed plan cannot react to what is said.
@@ -38,7 +42,12 @@ are substring matches; be aware they are lenient (see below).
 
 - `run_episode` builds a fresh `HumanoidEnv` per episode. Seed 0 is the
   canonical layout; seeds > 0 jitter every object's xy uniformly by ±`jitter` m
-  with `random.Random(seed)` (deterministic).
+  with `random.Random(seed)` (deterministic) and set each bag's `lump_seed` to
+  the seed, so the bean bag's lumps differ per seed (seed 4's crown is lumpy
+  enough that a centred tower falls; an offset spot works).
+- `scripts/episode_server.py` runs the same `run_episode` behind a localhost
+  HTTP bridge so a planner that is not a Python object (a Claude Code subagent
+  with no API key) can drive it one CLI call at a time; `--video` writes an mp4.
 - The `call` closure counts tool calls; `finish` raises `EpisodeDone` with the
   answer; call number `max_tool_calls + 1` logs `budget` and ends the episode.
 - Agent crashes become `error` in the row (episode fails), not harness crashes.

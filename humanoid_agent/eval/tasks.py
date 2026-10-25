@@ -11,7 +11,7 @@ from typing import Callable
 import numpy as np
 
 from ..sim.env import HumanoidEnv
-from ..sim.scene import SceneSpec, default_scene
+from ..sim.scene import BeanBag, Obj, SceneSpec, default_scene
 from ..sim.supervisor import Rule, Supervisor
 
 
@@ -32,6 +32,7 @@ class Task:
     max_tool_calls: int = 30
     tags: tuple[str, ...] = ()
     supervisor: Callable[[int], Supervisor] | None = None  # (seed) -> scripted human
+    settle_s: float = 0.0  # sim time to run before checking, so a wobbly stack has to stay up
 
     def report(self, ep: Episode) -> dict[str, bool]:
         return {name: bool(check(ep)) for name, check in self.checks.items()}
@@ -95,6 +96,26 @@ def _clarify_want(seed: int) -> str:
     return "blue_cube" if seed % 2 == 0 else "red_cube"
 
 
+def _bean_bag_scene() -> SceneSpec:
+    # All three cubes start in table_a's front row (two trips: the robot has two hands);
+    # the bag sits on table_b where the green cube normally is.
+    scene = default_scene()
+    scene.objects = [o if o.name != "green_cube" else Obj("green_cube", (1.0, -0.32, 0.80), rgba=o.rgba)
+                     for o in scene.objects]
+    scene.bags = [BeanBag("bean_bag", (0.0, 1.58), radius=0.16)]
+    return scene
+
+
+def _tower(ep: Episode, base: str, n: int) -> bool:
+    """n objects stacked one on another, the bottom one resting on `base`, all upright."""
+    env = ep.env
+    on = {o: env.support_of(o) for o in env.object_names}
+    level, count = base, 0
+    while (above := [o for o, s in on.items() if s == level]) and len(above) == 1:
+        level, count = above[0], count + 1
+    return count >= n and all(env.tilt_deg(o) < 20 for o in env.object_names if on[o] != "floor")
+
+
 TASKS: list[Task] = [
     Task("nav_table_b", "Go stand at table_b.",
          {"robot at table_b": lambda ep: _at(ep, "table_b")}, tags=("nav",)),
@@ -125,6 +146,10 @@ TASKS: list[Task] = [
           "other cube left on table_a": lambda ep: _on(ep, ({"red_cube", "blue_cube"} - {_clarify_want(ep.seed)}).pop(),
                                                        "table_a")},
          tags=("collab", "clarify"), supervisor=_clarify_sup),
+    # ---- soft support
+    Task("bean_bag_tower", "Stack all three cubes into a single tower on the bean bag. It has to stay standing.",
+         {"tower of 3 on bean_bag after 5 s": lambda ep: _tower(ep, "bean_bag", 3)},
+         scene=_bean_bag_scene, tags=("pnp", "multi", "soft"), settle_s=5.0),
 ]
 
 TASKS_BY_ID = {t.id: t for t in TASKS}

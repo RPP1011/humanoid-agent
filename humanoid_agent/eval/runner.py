@@ -27,7 +27,7 @@ from ..tools.registry import call_tool
 from .tasks import TASKS, TASKS_BY_ID, Episode, Task
 
 PLANNER_CODES = {"unknown_tool", "bad_args", "unknown_object", "unknown_location", "unknown_target",
-                 "unknown_surface", "not_holding", "hand_full", "budget", "no_supervisor"}
+                 "unknown_surface", "not_holding", "hand_full", "budget", "no_supervisor", "no_support"}
 
 
 def _jittered(task: Task, seed: int, jitter: float):
@@ -35,6 +35,7 @@ def _jittered(task: Task, seed: int, jitter: float):
     if seed == 0 or jitter <= 0:
         return scene
     rng = random.Random(seed)
+    scene.bags = [dataclasses.replace(b, lump_seed=seed) for b in scene.bags]
     scene.objects = [dataclasses.replace(o, pos=(o.pos[0] + rng.uniform(-jitter, jitter),
                                                   o.pos[1] + rng.uniform(-jitter, jitter), o.pos[2]))
                      for o in scene.objects]
@@ -68,6 +69,8 @@ def run_episode(agent, task: Task, seed: int, out_dir: Path, jitter: float = 0.0
         pass
     except Exception as e:  # agent/API crash is a result, not a harness crash
         error = f"{type(e).__name__}: {e}"
+    if task.settle_s:
+        env.step(int(task.settle_s / env.control_dt))
     checks = task.report(ep)
     ok = all(checks.values()) and error is None
 

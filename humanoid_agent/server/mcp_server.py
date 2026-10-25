@@ -72,8 +72,11 @@ def build_server(task_id: str | None) -> Server:
             if sess.task is None:
                 return text("no task loaded; call reset_task first", True)
             sess.episode.answer = args.get("answer")
+            if sess.task.settle_s:  # same as the runner: what was built has to stay up
+                await anyio.to_thread.run_sync(sess.env.step, int(sess.task.settle_s / sess.env.control_dt))
             report = sess.task.report(sess.episode)
-            lines = [f"{sess.task.id}: {'SUCCESS' if all(report.values()) else 'NOT YET'}"]
+            lines = [f"{sess.task.id}: {'SUCCESS' if all(report.values()) else 'NOT YET'}"
+                     + (f" (after {sess.task.settle_s:g} s settle)" if sess.task.settle_s else "")]
             lines += [f"  [{'x' if ok else ' '}] {name}" for name, ok in report.items()]
             return text("\n".join(lines))
 
