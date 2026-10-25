@@ -11,7 +11,7 @@ no API key: it calls tools through this CLI and the server runs the real
     python scripts/episode_server.py summary                               # summary.md of finished rows
 
 --video writes <task>_s<seed>.mp4 (overview of the robot plus a close-up of the
-first bean bag or fridge, if any) with ffmpeg. Rendering is slow on CPU, so prefer running
+first bean bag or fridge, if any, or a top-down view when the scene has people) with ffmpeg. Rendering is slow on CPU, so prefer running
 without it and re-rendering chosen episodes afterwards (deterministic replay):
 
     python scripts/episode_server.py replay runs/subagent/results.jsonl bean_bag_tower_s3 --out runs/videos
@@ -51,7 +51,7 @@ def _video_env():
                 self._k += 1
                 if self._k % self.every == 0:
                     cams = (["overview"] + [f"{b.name}_cam" for b in self.scene.bags[:1]]
-                            + [f"{f.name}_cam" for f in self.scene.fridges[:1]])
+                            + (["topdown"] if self.scene.people else [f"{f.name}_cam" for f in self.scene.fridges[:1]]))
                     self.frames.append(np.concatenate([self.render(c) for c in cams], axis=1))
 
     return VideoEnv, recorders

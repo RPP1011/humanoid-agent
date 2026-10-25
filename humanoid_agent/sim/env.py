@@ -9,6 +9,7 @@ import mujoco
 import numpy as np
 
 from ..control.locomotion import KinematicGlide, LocomotionController
+from .person import Walker
 from .scene import SceneSpec, build_model, default_scene
 
 ARM_JOINTS = {
@@ -115,6 +116,13 @@ class HumanoidEnv:
         self._ghosts: set[str] = set()  # released, not yet clear of the hand
         self.arm_target = {s: self.stand_ctrl[self.arm_act[s]].copy() for s in ("left", "right")}
         self.hand_target = {s: self.stand_ctrl[self.hand_act[s]].copy() for s in ("left", "right")}
+        # Scripted pedestrians (sim/person.py): mocap bodies moved every control step.
+        self.people = [Walker(p) for p in self.scene.people]
+        self._person_mocap = [int(m.body_mocapid[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, p.name)])
+                              for p in self.scene.people]
+        self.person_contacts: list[dict] = []  # contact onsets: {t, person, pos, robot}
+        self.min_person_dist = float("inf")
+        self._touching: set[str] = set()
         # Optional scripted human (sim/supervisor.py), set per task. Skills tick it.
         self.supervisor = None
         self.reset()
@@ -140,6 +148,11 @@ class HumanoidEnv:
             self.arm_target[s] = self.stand_ctrl[self.arm_act[s]].copy()
             self.hand_target[s] = self.stand_ctrl[self.hand_act[s]].copy()
         self.loco.reset(self)
+        for w in self.people:
+            w.reset(self.base_pose()[:2])
+        self.person_contacts, self.min_person_dist, self._touching = [], float("inf"), set()
+        self._apply_people()
+        mujoco.mj_forward(self.model, self.data)
         self.set_ego_pitch(0.6)
         # Let objects settle onto tables.
         for _ in range(25):
@@ -157,6 +170,8 @@ class HumanoidEnv:
                 self.loco.post_physics(self)
                 self._apply_doors()
                 self._apply_attachments()
+            if self.people:
+                self._tick_people()
             mujoco.mj_forward(self.model, self.data)
             for o in [o for o in self._ghosts
                       if min(np.linalg.norm(self.object_pos(o) - self.palm_pos(s)) for s in ("left", "right")) > 0.15]:
@@ -242,6 +257,31 @@ class HumanoidEnv:
         """Inside a closed fridge: a real camera could not see it."""
         f = self.fridge_of(self.support_of(name))
         return f is not None and self.door_angle[f.name] < 0.3
+
+    # Robot base keep-out radius for contact with a person (shoulder half-width ~0.2 m).
+    ROBOT_RADIUS = 0.2
+
+    def _tick_people(self) -> None:
+        robot = np.array(self.base_pose()[:2])
+        for w in self.people:
+            w.advance(self.control_dt, robot)
+            d = float(np.linalg.norm(w.pos - robot))
+            self.min_person_dist = min(self.min_person_dist, d)
+            if d < self.ROBOT_RADIUS + w.spec.radius:
+                if w.spec.name not in self._touching:
+                    self.person_contacts.append({"t": round(self.time, 2), "person": w.spec.name,
+                                                 "pos": [round(float(v), 3) for v in w.pos],
+                                                 "robot": [round(float(v), 3) for v in robot]})
+                self._touching.add(w.spec.name)
+            else:
+                self._touching.discard(w.spec.name)
+        self._apply_people()
+
+    def _apply_people(self) -> None:
+        for w, mid in zip(self.people, self._person_mocap):
+            self.data.mocap_pos[mid] = (*w.pos, 0.0)
+            h = float(np.arctan2(w.heading[1], w.heading[0])) / 2
+            self.data.mocap_quat[mid] = (np.cos(h), 0.0, 0.0, np.sin(h))
 
     def _apply_doors(self) -> None:
         for f, a in self.door_angle.items():

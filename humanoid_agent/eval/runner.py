@@ -29,10 +29,13 @@ from .tasks import TASKS, TASKS_BY_ID, Episode, Task
 PLANNER_CODES = {"unknown_tool", "bad_args", "unknown_object", "unknown_location", "unknown_target",
                  "unknown_surface", "not_holding", "hand_full", "budget", "no_supervisor", "no_support",
                  "door_closed"}
+# Neither planner nor skill error: the world got in the way and the planner has to react.
+WORLD_CODES = {"blocked_by_person"}
 
 
 def _jittered(task: Task, seed: int, jitter: float):
     scene = task.scene()
+    scene.people = [dataclasses.replace(p, seed=seed) for p in scene.people]
     if seed == 0 or jitter <= 0:
         return scene
     rng = random.Random(seed)
@@ -83,6 +86,8 @@ def run_episode(agent, task: Task, seed: int, out_dir: Path, jitter: float = 0.0
         "answer": ep.answer, "error": error, "checks": checks,
         "locomotion_is_physical": env.loco.is_physical,
         "transcript": env.supervisor.transcript if env.supervisor else None,
+        **({"person_contacts": env.person_contacts, "min_person_dist_m": round(env.min_person_dist, 3),
+            "people_is_physical": False} if env.people else {}),
         "skill_failures": [r["code"] for r in lib.log if not r.get("success", True)],
         "log": [{k: v for k, v in r.items() if k not in ("data",)} for r in lib.log],
     }
@@ -102,13 +107,18 @@ def summarize(rows: list[dict]) -> str:
     lines.append(f"\n**Overall: {total}/{len(rows)}**")
     codes = collections.Counter(c for r in rows for c in r["skill_failures"])
     if codes:
+        world = {c: n for c, n in codes.items() if c.endswith(tuple(WORLD_CODES))}
         planner = {c: n for c, n in codes.items() if c in PLANNER_CODES}
-        skill = {c: n for c, n in codes.items() if c not in PLANNER_CODES}
+        skill = {c: n for c, n in codes.items() if c not in PLANNER_CODES and c not in world}
         lines.append(f"\nFailure codes attributed to planner: {planner or '{}'}")
         lines.append(f"Failure codes attributed to skills/sim: {skill or '{}'}")
+        if world:
+            lines.append(f"World events the planner had to handle: {world}")
     errs = [r for r in rows if r["error"]]
     if errs:
         lines.append(f"\nAgent errors: {len(errs)} (first: {errs[0]['error']})")
+    if any("person_contacts" in r for r in rows):
+        lines.append("\n_People are scripted mocap walkers; contact is a base-distance test, not physics._")
     if rows and not rows[0]["locomotion_is_physical"]:
         lines.append("\n_Locomotion is the kinematic placeholder: walking results are not physical._")
     return "\n".join(lines)
