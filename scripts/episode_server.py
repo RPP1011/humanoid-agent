@@ -11,7 +11,10 @@ no API key: it calls tools through this CLI and the server runs the real
     python scripts/episode_server.py summary                               # summary.md of finished rows
 
 --video writes <task>_s<seed>.mp4 (overview of the robot plus a close-up of the
-first bean bag, if any) with ffmpeg.
+first bean bag, if any) with ffmpeg. Rendering is slow on CPU, so prefer running
+without it and re-rendering chosen episodes afterwards (deterministic replay):
+
+    python scripts/episode_server.py replay runs/subagent/results.jsonl bean_bag_tower_s3 --out runs/videos
 """
 from __future__ import annotations
 
@@ -26,15 +29,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
-def serve(port: int, out: Path, video: bool, jitter: float) -> None:
-    # Sim imports live here so the client commands start fast and need no GL backend.
+def _video_env():
     import numpy as np
 
-    from humanoid_agent.agents.base import EpisodeDone
-    from humanoid_agent.eval import runner
-    from humanoid_agent.eval.tasks import TASKS_BY_ID
     from humanoid_agent.sim.env import HumanoidEnv
-    from humanoid_agent.tools.registry import result_to_text
 
     recorders: dict[int, HumanoidEnv] = {}  # thread id -> env, so each episode's frames can be found
 
@@ -55,12 +53,64 @@ def serve(port: int, out: Path, video: bool, jitter: float) -> None:
                     cams = ["overview"] + [f"{b.name}_cam" for b in self.scene.bags[:1]]
                     self.frames.append(np.concatenate([self.render(c) for c in cams], axis=1))
 
+    return VideoEnv, recorders
+
+
+def _write_mp4(frames, path: Path) -> None:
+    if not frames:
+        return
+    h, w, _ = frames[0].shape
+    p = subprocess.Popen(["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
+                          "-s", f"{w}x{h}", "-r", "20", "-i", "-", "-pix_fmt", "yuv420p", str(path)],
+                         stdin=subprocess.PIPE)
+    for fr in frames:
+        p.stdin.write(fr.tobytes())
+    p.stdin.close()
+    p.wait()
+
+
+def replay(results: Path, episode: str, out: Path, jitter: float) -> None:
+    """Re-run a finished episode's logged skill calls with video. The sim is deterministic,
+    so this reproduces the episode without paying for video while the planner runs."""
+    from humanoid_agent.eval import runner
+    from humanoid_agent.eval.tasks import TASKS_BY_ID, Episode
+    from humanoid_agent.skills.library import SkillLibrary
+
+    row = next(r for r in map(json.loads, open(results)) if r.get("episode", f"{r['task']}_s{r['seed']}") == episode)
+    task = TASKS_BY_ID[row["task"]]
+    VideoEnv, _ = _video_env()
+    env = VideoEnv(scene=runner._jittered(task, row["seed"], jitter))
+    env.supervisor = task.supervisor(row["seed"]) if task.supervisor else None
+    lib = SkillLibrary(env)
+    ep = Episode(env, seed=row["seed"], initial_objects={o: env.object_pos(o) for o in env.object_names})
+    for e in row["log"]:
+        if e["skill"] == "finish" or e.get("code") == "budget":
+            break
+        getattr(lib, e["skill"])(*e.get("args", ()), **e.get("kwargs", {}))
+    if task.settle_s:
+        env.step(int(task.settle_s / env.control_dt))
+    ok = all(task.report(ep).values())
+    out.mkdir(parents=True, exist_ok=True)
+    _write_mp4(env.frames, out / f"{episode}.mp4")
+    print(f"{episode}: replayed {len(row['log'])} calls, success={ok} (original {row['success']})")
+
+
+def serve(port: int, out: Path, video: bool, jitter: float) -> None:
+    # Sim imports live here so the client commands start fast and need no GL backend.
+    from humanoid_agent.agents.base import EpisodeDone
+    from humanoid_agent.eval import runner
+    from humanoid_agent.eval.tasks import TASKS_BY_ID
+    from humanoid_agent.tools.registry import result_to_text
+
+    VideoEnv, recorders = _video_env()
+
     class RemoteAgent:
         name = "subagent"
 
         def __init__(self) -> None:
             self.inbox: queue.Queue = queue.Queue()
             self.outbox: queue.Queue = queue.Queue()
+            self.busy = threading.Lock()  # one tool call at a time, like a real planner turn
 
         def run(self, task_id: str, prompt: str, call) -> None:
             while True:
@@ -84,15 +134,8 @@ def serve(port: int, out: Path, video: bool, jitter: float) -> None:
         with lock, open(out / "results.jsonl", "a") as f:
             f.write(json.dumps(row, default=str) + "\n")
         env = recorders.pop(threading.get_ident(), None)
-        if env is not None and env.frames:
-            h, w, _ = env.frames[0].shape
-            p = subprocess.Popen(["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
-                                  "-s", f"{w}x{h}", "-r", "20", "-i", "-", "-pix_fmt", "yuv420p",
-                                  str(out / f"{task_id}_s{seed}.mp4")], stdin=subprocess.PIPE)
-            for fr in env.frames:
-                p.stdin.write(fr.tobytes())
-            p.stdin.close()
-            p.wait()
+        if env is not None:
+            _write_mp4(env.frames, out / f"{task_id}_s{seed}.mp4")
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a) -> None:
@@ -110,9 +153,12 @@ def serve(port: int, out: Path, video: bool, jitter: float) -> None:
                 agent = episodes.get(req["episode"])
                 if agent is None:
                     reply = {"error": "unknown or finished episode"}
+                elif not agent.busy.acquire(blocking=False):
+                    reply = {"error": "previous call on this episode is still running; wait for its result"}
                 else:
                     agent.inbox.put((req["tool"], req["args"]))
                     reply = {"result": agent.outbox.get()}
+                    agent.busy.release()
                     if reply["result"] == "episode ended":
                         episodes.pop(req["episode"], None)
             else:  # summary
@@ -152,9 +198,16 @@ def main() -> None:
     c.add_argument("tool")
     c.add_argument("args", nargs="?", default="{}")
     sub.add_parser("summary")
+    rp = sub.add_parser("replay")
+    rp.add_argument("results")
+    rp.add_argument("episode")
+    rp.add_argument("--out", default="runs/videos")
+    rp.add_argument("--jitter", type=float, default=0.03)
     a = ap.parse_args()
     if a.cmd == "serve":
         serve(a.port, Path(a.out), a.video, a.jitter)
+    elif a.cmd == "replay":
+        replay(Path(a.results), a.episode, Path(a.out), a.jitter)
     elif a.cmd == "start":
         print(json.dumps(_post(a.port, {"op": "start", "task": a.task, "seed": a.seed})))
     elif a.cmd == "call":
