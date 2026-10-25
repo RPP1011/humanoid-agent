@@ -17,9 +17,9 @@ planner-caused codes to that set.
 
 Current codes: `ok`, `fallen`, `bad_args`, `unknown_location`, `unknown_target`,
 `unknown_object`, `unknown_surface`, `unreachable`, `tracking`, `too_far`,
-`hand_full`, `not_holding`, `retract_blocked`, `no_free_space`, `no_support`, `placement`,
+`hand_full`, `not_holding`, `door_closed`, `retract_blocked`, `no_free_space`, `no_support`, `placement`,
 `timeout`; composites prefix sub-step failures: `approach_*`, `descend_*`,
-`align_*` (e.g. `approach_tracking`).
+`align_*`, `handle_*`, `backup_*` (e.g. `approach_tracking`).
 
 ## The `@skill` decorator
 
@@ -45,6 +45,7 @@ so the sub-call is not logged as a separate planner action. Internal helpers
 | Locomotion | `go_to_location`, `walk_to`, `turn_to`, `look_at` | `_walk_to`: turn-then-drive P-controller, 2 cm / 0.05 rad tolerance; a straight line that would enter a table (10 cm keep-out) is routed via table corners (`_route`, visibility graph) or refused `blocked_path`; yaw > 2π is `bad_args` |
 | Primitives | `reach`, `grasp`, `release`, `retract` | `grasp` = magic attach if object within 8 cm of palm |
 | Composites | `pick`, `place_on` | what planners should normally use |
+| Fixtures | `open_door`, `close_door` | fridge doors; see below |
 | People | `ask_supervisor`, `report` | `no_supervisor` if the task has none; asking costs 2 s of sim time |
 
 When `env.supervisor` is set (see `sim/supervisor.py`), the `@skill` wrapper ticks it after
@@ -79,6 +80,20 @@ release 1 cm above → `_retract` → settle 0.5 s → verify with `env.support_
 (`placement` failure otherwise). Success data: landed `pos`, `tilt_deg`,
 `release_miss_m`. Physics decides whether a stack stays up; the task checks
 again after its `settle_s`.
+
+### Fridges
+`open_door`: walk to the fridge stance (`FRIDGE_STANDOFF` = 0.16 m from the door)
+→ side-step so a free hand (left preferred: the handle is on the left) reaches 5 cm
+in front of the handle, close/open the fingers, retract → back up to
+`_door_clearance` (outside the door's swing radius) → swing the door kinematically
+→ walk back to the stance. **Placeholder:** the hand only touches the handle; nothing
+pulls the door. `close_door` retracts the free arms, backs up, swings it shut and
+stays there. `pick`/`place_on` refuse with `door_closed` while the door is shut,
+enter and leave through a waypoint 10 cm ahead of the base at the target height
+(`_outside`) so the hand never cuts diagonally through a shelf edge, and `pick`
+steps back 12 cm before raising to carry height. On fridge shelves `_free_spot`
+keeps 9 cm from the side walls, and on every surface it keeps the inboard side of
+the spot (where the opening fingers sweep) clear of other objects.
 
 ### Why `_reach` and `_retract` look the way they do
 `_reach` lifts to target height near the body before moving horizontally, and

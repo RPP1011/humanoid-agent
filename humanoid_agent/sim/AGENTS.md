@@ -36,6 +36,19 @@ stand to work at something, not the thing itself (e.g. `table_a` location is
 0.52 m in front of the table centre, facing it). Tasks that add tables must add
 a matching location or `go_to_location` can't get the robot there.
 
+### Fridge (`Fridge`, `kitchen_scene()`)
+
+Static carcass (back/sides/roof, solid block below the lowest shelf) + shelf geoms
+`<fridge>_<shelf>` + child body `<fridge>_door` with hinge joint `<fridge>_door`,
+handle geom/site `<fridge>_handle` and a close-up camera `<fridge>_cam`. `yaw` is
+the heading of the front face (multiples of π/2: footprints are axis-aligned);
+the hinge is on the robot's right. `shelf_tables()` returns each shelf as a
+Table-like record (`fridge_top_shelf`, ...) that `place_on` treats like a table;
+`footprint` / `door_footprint(angle)` are obstacle records for walk routing.
+Shelf heights (0.70, 1.05 m) are the band a *standing* G1 can reach; real fridges
+put shelves lower and higher than that. Shelves stop 5 cm short of the front so a
+hand at carry height in the doorway clears them.
+
 ## env.py — `HumanoidEnv`
 
 Thin wrapper around `MjModel`/`MjData` that skills drive.
@@ -71,6 +84,11 @@ Thin wrapper around `MjModel`/`MjData` that skills drive.
   `_support_name` (geom id → table / bag / object name, or `floor`): register new
   support geoms there. `support_of(obj)` = owner under the centre if within
   ~1.8·half, else `air`; `held` while attached. `tilt_deg(obj)` = angle from upright.
+- **Fridge doors are kinematic.** `door_angle[fridge]` is written into the hinge
+  qpos every substep (`_apply_doors`), so contact never moves a door and a closed
+  door really walls off the shelves. `hidden(obj)` = inside a fridge whose door is
+  shut; `list_objects` omits those. Shelf geoms are registered in `_support_name`
+  under the shelf name, the rest of the carcass as the fridge name.
 - `is_fallen()` = base height < 0.5 m. Every skill checks it.
 - Rendering: `MUJOCO_GL` defaults to `egl` *at import time* of this module. The
   `Renderer` is created lazily on first `render()`. `set_ego_pitch` rewrites the
