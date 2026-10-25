@@ -4,12 +4,14 @@ Design rules:
 - Skills are blocking, bounded in sim time, and always return a SkillResult.
 - Failure reasons are specific enough for a planner to recover (or for you to
   tell planner errors from skill errors in eval logs).
-- Perception is ground truth for now (`list_objects`). Swap in a detector later
-  behind the same signature.
+- Perception is ground truth (`list_objects`) unless the `camera` difficulty
+  switch is on: then it is what the head camera has seen (`perception.py`), and
+  skills refuse object names the robot has not seen yet (`not_seen`).
 """
 from __future__ import annotations
 
 import io
+import random
 from functools import wraps
 
 import mujoco
@@ -18,6 +20,8 @@ from PIL import Image
 
 from ..control.arm_ik import solve_arm_ik
 from ..sim.env import HumanoidEnv
+from .difficulty import Difficulty
+from .perception import CameraMemory
 from .types import SkillResult
 
 SIDES = ("left", "right")
@@ -35,6 +39,8 @@ def skill(fn):
         if self.env.is_fallen():
             return SkillResult(False, "fallen: robot is on the ground")
         t0 = self.env.time
+        if self.memory is not None:  # decide on what is in view now, not on what was there last skill
+            self.memory.observe()
         try:
             res = fn(self, *args, **kwargs)
         except (KeyError, ValueError) as e:
@@ -42,6 +48,8 @@ def skill(fn):
         if self.env.is_fallen() and res.success:
             res = SkillResult(False, "fallen: robot fell during skill", res.data)
         res.sim_time_s = round(self.env.time - t0, 3)
+        if self.memory is not None and (new := self.memory.observe()):
+            res.data["newly_seen"] = new
         sup = self.env.supervisor
         if sup is not None:
             sup.tick(self.env)
@@ -55,11 +63,25 @@ def skill(fn):
 
 
 class SkillLibrary:
-    def __init__(self, env: HumanoidEnv, frame_dir: str | None = None) -> None:
+    def __init__(self, env: HumanoidEnv, frame_dir: str | None = None,
+                 difficulty: Difficulty | None = None, seed: int = 0) -> None:
         self.env = env
         self.log: list[dict] = []
         self.frame_dir = frame_dir
         self._frame_count = 0
+        self.difficulty = difficulty or Difficulty()
+        self.memory = CameraMemory(env, seed) if self.difficulty.camera else None
+        self.faults: list[dict] = []  # injected failures, for the eval row (never shown to the planner)
+        self._fault_rng = random.Random(7919 * seed + 1)
+        self._grasps = 0
+
+    def _unseen(self, name: str) -> SkillResult | None:
+        """not_seen for a name the camera has not seen. Checked before existence, so a
+        made-up name and a real but unseen one get the same answer (no ground-truth leak)."""
+        if self.memory is None or self.memory.knows(name):
+            return None
+        return SkillResult(False, f"not_seen: {name} has not been seen yet; look around for it "
+                                  f"(look_around, go_to_location, open_door) or check list_objects")
 
     # ================================================================ queries
     @skill
@@ -78,6 +100,8 @@ class SkillLibrary:
     @skill
     def list_objects(self) -> SkillResult:
         x, y, _ = self.env.base_pose()
+        if self.memory is not None:
+            return self._list_seen()
         out, unseen = [], sorted({self.env.fridge_of(self.env.support_of(o)).name
                                   for o in self.env.object_names if self.env.hidden(o)})
         for name in self.env.object_names:
@@ -93,17 +117,43 @@ class SkillLibrary:
                 "held_by": self.env.attached.get(name, (None,))[0],
             })
         # Things to put objects on, so a planner can learn names like "bean_bag".
-        surfaces = [{"name": t.name, "pos": [round(t.pos[0], 3), round(t.pos[1], 3), t.height]}
-                    for t in self._supports()]
-        for b in self.env.scene.bags:
-            top, owner = self.env.surface_below(b.pos[0], b.pos[1], b.base_z + b.height + 0.02)
-            surfaces.append({"name": b.name, "pos": [round(b.pos[0], 3), round(b.pos[1], 3), round(top, 3)],
-                             "on": self.env.support_of_point(b.pos[0], b.pos[1], b.base_z), "soft": True})
-        data = {"objects": out, "surfaces": surfaces}
+        data = {"objects": out, "surfaces": self._surfaces()}
         if self.env.people:  # ground truth, like objects: position and current velocity
             data["people"] = [w.to_dict((x, y)) for w in self.env.people]
         if unseen:
             data["not_visible"] = f"{', '.join(unseen)} closed: open_door to see inside"
+        return SkillResult(True, data=data)
+
+    def _surfaces(self) -> list[dict]:
+        # Furniture is the map, known in every perception mode. Half extents let a
+        # planner work out where to stand for the far side of a table.
+        surfaces = [{"name": t.name, "pos": [round(t.pos[0], 3), round(t.pos[1], 3), t.height],
+                     "half_size": [round(t.size[0], 3), round(t.size[1], 3)]} for t in self._supports()]
+        for b in self.env.scene.bags:
+            top, owner = self.env.surface_below(b.pos[0], b.pos[1], b.base_z + b.height + 0.02)
+            surfaces.append({"name": b.name, "pos": [round(b.pos[0], 3), round(b.pos[1], 3), round(top, 3)],
+                             "on": self.env.support_of_point(b.pos[0], b.pos[1], b.base_z), "soft": True})
+        return surfaces
+
+    def _list_seen(self) -> SkillResult:
+        """Camera mode: beliefs, not ground truth. Positions are as last seen (noisy, maybe stale)."""
+        env, mem = self.env, self.memory
+        x, y, _ = env.base_pose()
+        now = set(mem.in_view())
+        out = [{"name": n, "pos": [round(float(v), 3) for v in b["pos"]], "on": b["on"],
+                "tilt_deg": round(b["tilt_deg"]), "dist_m": round(float(np.hypot(b["pos"][0] - x, b["pos"][1] - y)), 2),
+                "held_by": env.attached.get(n, (None,))[0],
+                "in_view": n in now or n in env.attached, "last_seen_s_ago": round(env.time - b["t"], 1)}
+               for n, b in mem.seen.items()]
+        data = {"perception": "camera: only objects your head camera has seen so far, where they were when last "
+                              "seen. Anything else is unknown, not absent: look around (look_around, "
+                              "go_to_location, look_at) to see more.",
+                "objects": out, "surfaces": self._surfaces()}
+        if env.people:
+            data["people"] = [w.to_dict((x, y)) for w in mem.people_in_view()]
+        closed = [f.name for f in env.scene.fridges if env.door_angle[f.name] < 0.3]
+        if closed:  # every closed fridge, empty or not: listing only non-empty ones would leak contents
+            data["not_visible"] = f"{', '.join(closed)} closed: contents unknown until you open_door"
         return SkillResult(True, data=data)
 
     @skill
@@ -199,7 +249,11 @@ class SkillLibrary:
     def look_at(self, target: str) -> SkillResult:
         """Turn the body to face an object or location and tilt the ego camera toward it."""
         env = self.env
-        if target in env.object_names:
+        if target not in env.scene.locations and (r := self._unseen(target)):
+            return r
+        if self.memory is not None and target in self.memory.seen:
+            p = self.memory.seen[target]["pos"]
+        elif target in env.object_names:
             p = env.object_pos(target)
         elif target in env.scene.locations:
             lx, ly, _ = env.scene.locations[target]
@@ -216,6 +270,27 @@ class SkillLibrary:
         env.set_ego_pitch(pitch)
         env.step()
         return SkillResult(True, data={"yaw": round(yaw, 3), "camera_pitch": round(pitch, 3)})
+
+    DEFAULT_PITCH = 0.52  # rad down: the ego camera's mounting tilt (scene.py), which sees table tops at 1-3 m
+
+    @skill
+    def look_around(self) -> SkillResult:
+        """Turn in place through four headings, looking at each, then face the original heading."""
+        env = self.env
+        x, y, yaw0 = env.base_pose()
+        env.set_ego_pitch(self.DEFAULT_PITCH)
+        seen = set()
+        for k in (1, 2, 3, 4):
+            r = self._walk_to(x, y, float(_wrap_angle(yaw0 + k * np.pi / 2)), 8.0)
+            if not r.success:
+                return r
+            if self.memory is not None:
+                self.memory.observe()
+                seen.update(self.memory.in_view())
+        data = {"heading": round(env.base_pose()[2], 3)}
+        if self.memory is not None:
+            data["seen"] = sorted(seen)
+        return SkillResult(True, data=data)
 
     # ================================================================ fixtures
     @skill
@@ -383,7 +458,8 @@ class SkillLibrary:
         self.env.loco.stop()
         self.env.step(max(1, int(round(seconds / self.env.control_dt))))
         x, y, _ = self.env.base_pose()
-        return SkillResult(True, data={"people": [w.to_dict((x, y)) for w in self.env.people]}
+        people = self.env.people if self.memory is None else self.memory.people_in_view()
+        return SkillResult(True, data={"people": [w.to_dict((x, y)) for w in people]}
                            if self.env.people else {})
 
     # ================================================================ talking to people
@@ -448,6 +524,8 @@ class SkillLibrary:
     def grasp(self, side: str, obj: str, max_dist: float = 0.08) -> SkillResult:
         """Close the hand on an object already at the palm. PLACEHOLDER: 'magic' attach."""
         env = self.env
+        if r := self._unseen(obj):
+            return r
         if obj not in env.object_names:
             return SkillResult(False, f"unknown_object: {obj}")
         if any(s == side for s, *_ in env.attached.values()):
@@ -456,10 +534,24 @@ class SkillLibrary:
         if d > max_dist:
             return SkillResult(False, f"too_far: {obj} is {d:.3f}m from {side} palm; reach it first",
                                {"dist_m": round(d, 3)})
+        if self._slips():
+            # INJECTED FAULT (difficulty `slip`). The fingers stay open: closing them on an
+            # object that is not attached squeezes it across the table.
+            env.step(20)
+            self.faults.append({"t": round(env.time, 2), "fault": "grasp_slip", "obj": obj, "side": side})
+            return SkillResult(False, f"grasp_slip: {obj} slipped out of the {side} hand as it closed; "
+                                      f"it is still on {env.support_of(obj)}")
         env.attach(obj, side)
         env.hand_target[side] = self._closed_hand(side)
         env.step(10)
         return SkillResult(True, data={"holding": obj})
+
+    def _slips(self) -> bool:
+        if not self.difficulty.slip:
+            return False
+        self._grasps += 1
+        # The first grasp always slips so every episode with the switch on tests recovery.
+        return self._grasps == 1 or self._fault_rng.random() < self.difficulty.slip
 
     @skill
     def release(self, side: str) -> SkillResult:
@@ -503,6 +595,8 @@ class SkillLibrary:
     def pick(self, obj: str, side: str | None = None) -> SkillResult:
         """Approach from above, grasp, lift. Requires standing within reach."""
         env = self.env
+        if r := self._unseen(obj):
+            return r
         if obj not in env.object_names:
             return SkillResult(False, f"unknown_object: {obj}")
         p = env.object_pos(obj)
@@ -535,6 +629,10 @@ class SkillLibrary:
             return SkillResult(False, f"descend_{r.reason}", r.data)
         g = SkillLibrary.grasp.__wrapped__(self, side, obj, max(0.08, half + 0.06))
         if not g.success:
+            if fridge is not None:  # same way out as a successful pick: up clear of the object, then out
+                self._reach(side, env.palm_pos(side) + [0, 0, 0.06])
+                self._outside(side, env.palm_pos(side))
+            self._retract(side)
             return g
         # Inside a fridge the shelf above caps the lift; pull straight out before raising to carry.
         lift = self._reach(side, env.palm_pos(side) + [0, 0, 0.12 if fridge is None else 0.06])
@@ -588,6 +686,8 @@ class SkillLibrary:
             if spot is None:
                 return SkillResult(False, f"no_free_space: no clear reachable spot on {surface}; "
                                           f"reposition or clear the table")
+        elif bag is None and (r := self._unseen(surface)):
+            return r
         elif bag is not None or surface in env.object_names:
             if surface == obj:
                 return SkillResult(False, f"bad_args: cannot place {obj} on itself")
@@ -751,7 +851,7 @@ class SkillLibrary:
             return SkillResult(False, "too_far: target is more than 0.5m from a reachable stance; walk closer first")
         if any(self._in_table(t, (bx, by), self.STANCE_MARGIN) for t in self._obstacles()):
             # The kinematic base would drive the legs into the table and wreck the arm.
-            return SkillResult(False, "too_far: target is too deep into the table to reach from its edge")
+            return SkillResult(False, "too_far: target is too deep into the table to reach from this side")
         r = self._step_to(bx, by, yaw)
         if not r.success:
             return SkillResult(False, f"align_{r.reason}", r.data)

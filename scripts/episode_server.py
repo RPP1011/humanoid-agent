@@ -6,6 +6,7 @@ no API key: it calls tools through this CLI and the server runs the real
 
     python scripts/episode_server.py serve --out runs/subagent [--video]   # leave running
     python scripts/episode_server.py start bean_bag_tower 3                # -> episode id + prompt
+    python scripts/episode_server.py start swap 1 --difficulty slip,camera # with difficulty switches
     python scripts/episode_server.py call <id> list_objects '{}'          # -> tool result JSON
     python scripts/episode_server.py call <id> finish '{"answer": "done"}'
     python scripts/episode_server.py summary                               # summary.md of finished rows
@@ -75,14 +76,16 @@ def replay(results: Path, episode: str, out: Path, jitter: float) -> None:
     so this reproduces the episode without paying for video while the planner runs."""
     from humanoid_agent.eval import runner
     from humanoid_agent.eval.tasks import TASKS_BY_ID, Episode
+    from humanoid_agent.skills.difficulty import Difficulty
     from humanoid_agent.skills.library import SkillLibrary
 
     row = next(r for r in map(json.loads, open(results)) if r.get("episode", f"{r['task']}_s{r['seed']}") == episode)
     task = TASKS_BY_ID[row["task"]]
+    diff = Difficulty.parse(row.get("difficulty"))
     VideoEnv, _ = _video_env()
-    env = VideoEnv(scene=runner._jittered(task, row["seed"], jitter))
+    env = VideoEnv(scene=runner._jittered(task, row["seed"], jitter, diff))
     env.supervisor = task.supervisor(row["seed"]) if task.supervisor else None
-    lib = SkillLibrary(env)
+    lib = SkillLibrary(env, difficulty=diff, seed=row["seed"])
     ep = Episode(env, seed=row["seed"], initial_objects={o: env.object_pos(o) for o in env.object_names})
     for e in row["log"]:
         if e["skill"] == "finish" or e.get("code") == "budget":
@@ -101,6 +104,7 @@ def serve(port: int, out: Path, video: bool, jitter: float) -> None:
     from humanoid_agent.agents.base import EpisodeDone
     from humanoid_agent.eval import runner
     from humanoid_agent.eval.tasks import TASKS_BY_ID
+    from humanoid_agent.skills.difficulty import Difficulty
     from humanoid_agent.tools.registry import result_to_text
 
     VideoEnv, recorders = _video_env()
@@ -129,14 +133,14 @@ def serve(port: int, out: Path, video: bool, jitter: float) -> None:
     episodes: dict[str, RemoteAgent] = {}
     lock = threading.Lock()
 
-    def episode(eid: str, agent: RemoteAgent, task_id: str, seed: int) -> None:
-        row = runner.run_episode(agent, TASKS_BY_ID[task_id], seed, out, jitter)
+    def episode(eid: str, agent: RemoteAgent, task_id: str, seed: int, diff) -> None:
+        row = runner.run_episode(agent, TASKS_BY_ID[task_id], seed, out, jitter, diff)
         row["episode"] = eid
         with lock, open(out / "results.jsonl", "a") as f:
             f.write(json.dumps(row, default=str) + "\n")
         env = recorders.pop(threading.get_ident(), None)
         if env is not None:
-            _write_mp4(env.frames, out / f"{task_id}_s{seed}.mp4")
+            _write_mp4(env.frames, out / f"{eid}.mp4")
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a) -> None:
@@ -145,10 +149,12 @@ def serve(port: int, out: Path, video: bool, jitter: float) -> None:
         def do_POST(self) -> None:
             req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             if req["op"] == "start":
-                eid = f"{req['task']}_s{req['seed']}"
+                diff = Difficulty.parse(req.get("difficulty"))
+                eid = f"{req['task']}_s{req['seed']}" + ("" if diff.label == "none" else f"_{diff.label}")
                 agent = RemoteAgent()
                 episodes[eid] = agent
-                threading.Thread(target=episode, args=(eid, agent, req["task"], int(req["seed"])), daemon=True).start()
+                threading.Thread(target=episode, args=(eid, agent, req["task"], int(req["seed"]), diff),
+                                 daemon=True).start()
                 reply = {"episode": eid, "prompt": TASKS_BY_ID[req["task"]].prompt}
             elif req["op"] == "call":
                 agent = episodes.get(req["episode"])
@@ -194,6 +200,7 @@ def main() -> None:
     st = sub.add_parser("start")
     st.add_argument("task")
     st.add_argument("seed", type=int)
+    st.add_argument("--difficulty", default="none", help="e.g. slip, deep, camera, slip,camera, all")
     c = sub.add_parser("call")
     c.add_argument("episode")
     c.add_argument("tool")
@@ -210,7 +217,7 @@ def main() -> None:
     elif a.cmd == "replay":
         replay(Path(a.results), a.episode, Path(a.out), a.jitter)
     elif a.cmd == "start":
-        print(json.dumps(_post(a.port, {"op": "start", "task": a.task, "seed": a.seed})))
+        print(json.dumps(_post(a.port, {"op": "start", "task": a.task, "seed": a.seed, "difficulty": a.difficulty})))
     elif a.cmd == "call":
         try:
             args = json.loads(a.args)

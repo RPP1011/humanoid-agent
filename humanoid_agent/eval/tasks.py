@@ -33,6 +33,7 @@ class Task:
     max_tool_calls: int = 30
     tags: tuple[str, ...] = ()
     supervisor: Callable[[int], Supervisor] | None = None  # (seed) -> scripted human
+    targets: tuple[str, ...] = ()  # objects the task needs moved (the `deep` switch may push one out of reach)
     settle_s: float = 0.0  # sim time to run before checking, so a wobbly stack has to stay up
 
     def report(self, ep: Episode) -> dict[str, bool]:
@@ -147,15 +148,18 @@ TASKS: list[Task] = [
     Task("nav_table_b", "Go stand at table_b.",
          {"robot at table_b": lambda ep: _at(ep, "table_b")}, tags=("nav",)),
     Task("move_red_to_b", "Put the red cube on table_b.",
-         {"red_cube on table_b": lambda ep: _on(ep, "red_cube", "table_b")}, tags=("pnp",)),
+         {"red_cube on table_b": lambda ep: _on(ep, "red_cube", "table_b")}, tags=("pnp",), targets=("red_cube",)),
     Task("move_both_to_b", "Move both cubes that are on table_a over to table_b.",
          {"red_cube on table_b": lambda ep: _on(ep, "red_cube", "table_b"),
-          "blue_cube on table_b": lambda ep: _on(ep, "blue_cube", "table_b")}, tags=("pnp", "multi")),
+          "blue_cube on table_b": lambda ep: _on(ep, "blue_cube", "table_b")}, tags=("pnp", "multi"),
+         targets=("red_cube", "blue_cube")),
     Task("fetch_green_to_a", "Bring the green cube to the other table.",
-         {"green_cube on table_a": lambda ep: _on(ep, "green_cube", "table_a")}, tags=("pnp", "grounding")),
+         {"green_cube on table_a": lambda ep: _on(ep, "green_cube", "table_a")}, tags=("pnp", "grounding"),
+         targets=("green_cube",)),
     Task("swap", "Swap things around: the red cube should end up on table_b and the green cube on table_a.",
          {"red_cube on table_b": lambda ep: _on(ep, "red_cube", "table_b"),
-          "green_cube on table_a": lambda ep: _on(ep, "green_cube", "table_a")}, tags=("pnp", "multi")),
+          "green_cube on table_a": lambda ep: _on(ep, "green_cube", "table_a")}, tags=("pnp", "multi"),
+         targets=("red_cube", "green_cube")),
     Task("which_on_b", "Without moving anything, tell me which colour cube is on table_b. Use finish() to answer.",
          {"answer names green": lambda ep: _answer_has(ep, "green"),
           "nothing moved": _undisturbed}, tags=("query",)),
@@ -187,13 +191,13 @@ TASKS: list[Task] = [
          {"milk on fridge_top_shelf": lambda ep: _on(ep, "milk", "fridge_top_shelf"),
           "fridge door closed": _door_closed,
           "nothing else moved": _others_undisturbed("milk")},
-         scene=kitchen_scene, tags=("household", "articulated")),
+         scene=kitchen_scene, tags=("household", "articulated"), targets=("milk",)),
     # ---- dynamic obstacle: a scripted person crosses the route. Never mentioned in the prompt.
     Task("milk_to_table_busy", "Bring the milk from the counter to the kitchen table.",
          {"milk on kitchen_table": lambda ep: _on(ep, "milk", "kitchen_table"),
           "never touched the person": _no_person_contact,
           "nothing else moved": _others_undisturbed("milk")},
-         scene=_busy_kitchen_scene, tags=("household", "dynamic")),
+         scene=_busy_kitchen_scene, tags=("household", "dynamic"), targets=("milk",)),
 ]
 
 TASKS_BY_ID = {t.id: t for t in TASKS}

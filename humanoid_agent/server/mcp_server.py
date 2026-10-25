@@ -17,8 +17,10 @@ import mcp.types as types
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
 
+from ..eval.runner import _jittered
 from ..eval.tasks import TASKS, TASKS_BY_ID, Episode
 from ..sim.env import HumanoidEnv
+from ..skills.difficulty import Difficulty
 from ..skills.library import SkillLibrary
 from ..tools.registry import TOOLS, call_tool, result_to_text
 
@@ -27,11 +29,12 @@ class Session:
     def __init__(self, task_id: str | None) -> None:
         self.reset(task_id)
 
-    def reset(self, task_id: str | None) -> str:
+    def reset(self, task_id: str | None, difficulty: str | None = None) -> str:
         self.task = TASKS_BY_ID[task_id] if task_id else None
-        self.env = HumanoidEnv(scene=self.task.scene() if self.task else None)
+        diff = Difficulty.parse(difficulty)
+        self.env = HumanoidEnv(scene=_jittered(self.task, 0, 0.0, diff) if self.task else None)
         self.env.supervisor = self.task.supervisor(0) if self.task and self.task.supervisor else None
-        self.lib = SkillLibrary(self.env)
+        self.lib = SkillLibrary(self.env, difficulty=diff)
         self.episode = Episode(self.env, initial_objects={o: self.env.object_pos(o) for o in self.env.object_names})
         return self.task.prompt if self.task else "Free play: default scene loaded."
 
@@ -40,8 +43,10 @@ CONTROL_TOOLS = [
     types.Tool(name="list_tasks", description="List eval tasks (id and prompt).",
                input_schema={"type": "object", "properties": {}}),
     types.Tool(name="reset_task", description="Reset the sim to an eval task's scene; returns the task prompt. "
-                                              "Omit task_id for free play.",
-               input_schema={"type": "object", "properties": {"task_id": {"type": "string"}}}),
+                                              "Omit task_id for free play. difficulty turns on switches, e.g. "
+                                              "'slip', 'deep', 'camera', 'slip,camera' or 'all'.",
+               input_schema={"type": "object", "properties": {"task_id": {"type": "string"},
+                                                              "difficulty": {"type": "string"}}}),
     types.Tool(name="check_task", description="Ground-truth success check for the current task. "
                                               "Optional answer for question tasks.",
                input_schema={"type": "object", "properties": {"answer": {"type": "string"}}}),
@@ -67,7 +72,11 @@ def build_server(task_id: str | None) -> Server:
             tid = args.get("task_id")
             if tid and tid not in TASKS_BY_ID:
                 return text(f"unknown task {tid}", True)
-            return text(await anyio.to_thread.run_sync(sess.reset, tid))
+            try:
+                Difficulty.parse(args.get("difficulty"))
+            except ValueError as e:
+                return text(str(e), True)
+            return text(await anyio.to_thread.run_sync(sess.reset, tid, args.get("difficulty")))
         if name == "check_task":
             if sess.task is None:
                 return text("no task loaded; call reset_task first", True)
