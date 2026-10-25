@@ -62,3 +62,20 @@ def test_task_report_names_unmet_conditions(lib):
     ep = Episode(lib.env, initial_objects={o: lib.env.object_pos(o) for o in lib.env.object_names})
     report = TASKS_BY_ID["swap"].report(ep)
     assert report == {"red_cube on table_b": False, "green_cube on table_a": False}
+
+
+@pytest.fixture
+def kitchen():
+    from humanoid_agent.sim.scene import kitchen_scene
+    return SkillLibrary(HumanoidEnv(scene=kitchen_scene()))
+
+
+def test_closed_fridge_hides_and_blocks_its_contents(kitchen):
+    names = {o["name"] for o in kitchen.list_objects().data["objects"]}
+    assert "soda_can" not in names and "milk" in names
+    assert kitchen.go_to_location("fridge").success
+    res = kitchen.pick("soda_can")
+    assert not res.success and res.code == "door_closed"
+    assert kitchen.open_door("fridge").success
+    assert "soda_can" in {o["name"] for o in kitchen.list_objects().data["objects"]}
+    assert kitchen.get_state().data["doors"] == {"fridge": "open"}

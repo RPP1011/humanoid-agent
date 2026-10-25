@@ -4,6 +4,7 @@ Built with MjSpec so tasks can define their own layouts without hand-editing XML
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -33,6 +34,72 @@ class Obj:
     half_size: float = 0.025
     rgba: tuple[float, float, float, float] = (0.8, 0.2, 0.2, 1.0)
     category: str = "cube"
+    shape: str = "box"                 # "box" (cube of half_size) or "cylinder" (half_size = half height)
+    radius: float = 0.0                # cylinder radius
+
+
+@dataclass
+class Fridge:
+    """Box fridge with interior shelves and one hinged door (articulated, joint `<name>_door`).
+
+    Local frame: +x is the outward normal of the front face, so a robot working at
+    the fridge faces yaw + pi. The hinge is on the robot's right (local +y); the door
+    opens by swinging its free edge out toward the robot and over to that side.
+    """
+    name: str
+    pos: tuple[float, float]               # x, y of footprint centre
+    yaw: float = 0.0                       # world heading of the front face; multiples of pi/2 only
+    size: tuple[float, float, float] = (0.30, 0.30, 1.50)  # half depth, half width, full height
+    shelves: tuple[float, ...] = (0.70, 1.05)  # shelf top heights; reachable band for a standing G1
+    shelf_names: tuple[str, ...] = ("bottom_shelf", "top_shelf")
+    open_angle: float = 1.92               # rad; ~110 deg puts the door clear beside the front
+    wall: float = 0.02
+    # Shelves stop short of the front so a hand at carry height in the doorway clears them.
+    shelf_inset: float = 0.05
+    door_thick: float = 0.03
+
+    def to_world(self, lx: float, ly: float) -> tuple[float, float]:
+        c, s = math.cos(self.yaw), math.sin(self.yaw)
+        return self.pos[0] + c * lx - s * ly, self.pos[1] + s * lx + c * ly
+
+    def _aabb_half(self, hx: float, hy: float) -> tuple[float, float]:
+        c, s = abs(math.cos(self.yaw)), abs(math.sin(self.yaw))
+        return c * hx + s * hy, s * hx + c * hy
+
+    @property
+    def footprint(self) -> Table:
+        """Axis-aligned footprint of the carcass (door excluded), as an obstacle record."""
+        return Table(self.name, self.pos, self._aabb_half(self.size[0] + self.door_thick, self.size[1]),
+                     self.size[2])
+
+    def shelf_tables(self) -> list[Table]:
+        """Each shelf as a Table-like support record named `<fridge>_<shelf>`."""
+        d, w, t = self.size[0], self.size[1], self.wall
+        hx, cx = self.shelf_half_depth, t / 2 - self.shelf_inset / 2
+        return [Table(f"{self.name}_{n}", self.to_world(cx, 0.0), self._aabb_half(hx, w - t), h)
+                for n, h in zip(self.shelf_names, self.shelves)]
+
+    @property
+    def shelf_half_depth(self) -> float:
+        return self.size[0] - self.wall / 2 - self.shelf_inset / 2
+
+    @property
+    def hinge_local(self) -> tuple[float, float]:
+        return self.size[0] + self.door_thick / 2, self.size[1]
+
+    def door_footprint(self, angle: float) -> Table:
+        """World AABB swept by the door panel at `angle` (for routing around an open door)."""
+        hx, hy = self.hinge_local
+        w = 2 * self.size[1]
+        pts = [(hx, hy), (hx + w * math.sin(angle), hy - w * math.cos(angle))]
+        xs, ys = zip(*(self.to_world(*p) for p in pts))
+        return Table(f"{self.name}_door", ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2),
+                     ((max(xs) - min(xs)) / 2 + 0.02, (max(ys) - min(ys)) / 2 + 0.02), self.size[2])
+
+    def stance(self, standoff: float) -> tuple[float, float, float]:
+        """Standing pose `standoff` metres in front of the front face, facing the fridge."""
+        x, y = self.to_world(self.size[0] + self.door_thick + standoff, 0.0)
+        return x, y, math.atan2(math.sin(self.yaw + math.pi), math.cos(self.yaw + math.pi))
 
 
 @dataclass
@@ -84,6 +151,7 @@ class SceneSpec:
     tables: list[Table] = field(default_factory=list)
     objects: list[Obj] = field(default_factory=list)
     bags: list[BeanBag] = field(default_factory=list)
+    fridges: list[Fridge] = field(default_factory=list)
     # Named navigation targets the planner can refer to (x, y, yaw).
     locations: dict[str, tuple[float, float, float]] = field(default_factory=dict)
 
@@ -146,13 +214,17 @@ def build_model(scene: SceneSpec) -> mujoco.MjModel:
                     rgba=[0.4, 0.3, 0.2, 1], contype=WORLD_BITS, conaffinity=WORLD_BITS,
                 )
 
+    for f in scene.fridges:
+        _add_fridge(spec, f)
+
     for o in scene.objects:
         b = spec.worldbody.add_body(name=o.name, pos=list(o.pos))
         b.add_freejoint(name=f"{o.name}_free")
+        cyl = o.shape == "cylinder"
         b.add_geom(
             name=f"{o.name}_geom",
-            type=mujoco.mjtGeom.mjGEOM_BOX,
-            size=[o.half_size] * 3,
+            type=mujoco.mjtGeom.mjGEOM_CYLINDER if cyl else mujoco.mjtGeom.mjGEOM_BOX,
+            size=[o.radius, o.half_size, 0] if cyl else [o.half_size] * 3,
             rgba=list(o.rgba),
             mass=0.05,
             friction=[1.5, 0.02, 0.001],
@@ -185,3 +257,74 @@ def build_model(scene: SceneSpec) -> mujoco.MjModel:
                        rgba=[v * 0.8 for v in g.rgba[:3]] + [1.0])
 
     return spec.compile()
+
+
+FRIDGE_WHITE = [0.93, 0.94, 0.95, 1]
+_WORLD = dict(contype=WORLD_BITS, conaffinity=WORLD_BITS)
+
+
+def _add_fridge(spec: mujoco.MjSpec, f: Fridge) -> None:
+    box = mujoco.mjtGeom.mjGEOM_BOX
+    d, w, h, t = f.size[0], f.size[1], f.size[2], f.wall
+    b = spec.worldbody.add_body(name=f.name, pos=[f.pos[0], f.pos[1], 0],
+                                quat=[math.cos(f.yaw / 2), 0, 0, math.sin(f.yaw / 2)])
+    low = f.shelves[0] - t  # solid compressor/crisper block below the lowest shelf
+    for name, size, pos, rgba in [
+        ("back", [t / 2, w, h / 2], [-d + t / 2, 0, h / 2], FRIDGE_WHITE),
+        ("left", [d, t / 2, h / 2], [0, -w + t / 2, h / 2], FRIDGE_WHITE),
+        ("right", [d, t / 2, h / 2], [0, w - t / 2, h / 2], FRIDGE_WHITE),
+        ("roof", [d, w, t / 2], [0, 0, h - t / 2], FRIDGE_WHITE),
+        ("base", [d, w, low / 2], [0, 0, low / 2], [0.85, 0.86, 0.88, 1]),
+    ]:
+        b.add_geom(name=f"{f.name}_{name}", type=box, size=size, pos=pos, rgba=rgba, **_WORLD)
+    for n, z in zip(f.shelf_names, f.shelves):
+        b.add_geom(name=f"{f.name}_{n}", type=box, size=[f.shelf_half_depth, w - t, t / 2],
+                   pos=[t / 2 - f.shelf_inset / 2, 0, z - t / 2],
+                   rgba=[0.75, 0.85, 0.9, 1], **_WORLD)
+    # Close-up for videos: from the robot's front-left (opposite the hinge), so the open
+    # door does not hide the shelves.
+    target = np.array([*f.to_world(f.size[0] - 0.1, 0.0), 0.95])
+    eye = np.array([*f.to_world(f.size[0] + 1.3, -0.9), 1.8])
+    fwd = (target - eye) / np.linalg.norm(target - eye)
+    right = np.cross(fwd, [0, 0, 1])
+    right /= np.linalg.norm(right)
+    spec.worldbody.add_camera(name=f"{f.name}_cam", pos=list(eye), xyaxes=list(right) + list(np.cross(right, fwd)),
+                              fovy=55)
+    hx, hy = f.hinge_local
+    door = b.add_body(name=f"{f.name}_door", pos=[hx, hy, 0])
+    door.add_joint(name=f"{f.name}_door", type=mujoco.mjtJoint.mjJNT_HINGE, axis=[0, 0, 1],
+                   range=[0, f.open_angle + 0.1], damping=1.0)
+    door.add_geom(name=f"{f.name}_door_panel", type=box, size=[f.door_thick / 2, w, h / 2 - 0.005],
+                  pos=[0, -w, h / 2], rgba=FRIDGE_WHITE, mass=5.0, **_WORLD)
+    # Vertical bar handle on the free edge, at a height the standing G1 can reach.
+    door.add_geom(name=f"{f.name}_handle", type=mujoco.mjtGeom.mjGEOM_CAPSULE, size=[0.012, 0.12, 0],
+                  pos=[f.door_thick / 2 + 0.035, -2 * w + 0.06, 1.0], rgba=[0.6, 0.6, 0.62, 1], mass=0.1, **_WORLD)
+    door.add_site(name=f"{f.name}_handle", pos=[f.door_thick / 2 + 0.035, -2 * w + 0.06, 1.0])
+
+
+def kitchen_scene() -> SceneSpec:
+    """Minimal kitchen: fridge (soda, juice, yogurt on two shelves), dining table, counter."""
+    fridge = Fridge("fridge", (1.6, 0.0), yaw=math.pi)  # front faces -x, toward the start pose
+    top, bottom = (z + 0.001 for z in fridge.shelves[::-1])
+    return SceneSpec(
+        tables=[
+            Table("kitchen_table", (0.0, 1.55), size=(0.4, 0.3)),
+            Table("counter", (0.0, -1.45), size=(0.5, 0.25), height=0.85),
+        ],
+        fridges=[fridge],
+        objects=[
+            Obj("soda_can", (1.43, 0.12, bottom + 0.05), half_size=0.05, shape="cylinder", radius=0.03,
+                rgba=(0.8, 0.1, 0.1, 1), category="drink"),
+            Obj("juice_box", (1.43, -0.12, bottom + 0.035), half_size=0.035,
+                rgba=(0.95, 0.6, 0.1, 1), category="drink"),
+            Obj("yogurt", (1.45, -0.14, top + 0.03), half_size=0.03, shape="cylinder", radius=0.035,
+                rgba=(0.95, 0.95, 0.85, 1), category="food"),
+            Obj("milk", (0.15, -1.33, 0.85 + 0.035), half_size=0.035, rgba=(0.9, 0.92, 1.0, 1), category="drink"),
+        ],
+        locations={
+            "start": (0.0, 0.0, 0.0),
+            "fridge": fridge.stance(0.16),
+            "kitchen_table": (0.0, 1.03, 1.5708),
+            "counter": (0.0, -0.98, -1.5708),
+        },
+    )

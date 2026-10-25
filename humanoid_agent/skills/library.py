@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 from functools import wraps
 
+import mujoco
 import numpy as np
 from PIL import Image
 
@@ -70,13 +71,18 @@ class SkillLibrary:
             "holding": held,
             "sim_time_s": round(self.env.time, 2),
             "locomotion_is_physical": self.env.loco.is_physical,
+            **({"doors": {f: ("open" if self.env.door_is_open(f) else "closed" if a < 0.05 else "ajar")
+                          for f, a in self.env.door_angle.items()}} if self.env.door_angle else {}),
         })
 
     @skill
     def list_objects(self) -> SkillResult:
         x, y, _ = self.env.base_pose()
-        out = []
+        out, unseen = [], sorted({self.env.fridge_of(self.env.support_of(o)).name
+                                  for o in self.env.object_names if self.env.hidden(o)})
         for name in self.env.object_names:
+            if self.env.hidden(name):
+                continue
             p = self.env.object_pos(name)
             out.append({
                 "name": name,
@@ -87,12 +93,16 @@ class SkillLibrary:
                 "held_by": self.env.attached.get(name, (None,))[0],
             })
         # Things to put objects on, so a planner can learn names like "bean_bag".
-        surfaces = [{"name": t.name, "pos": [t.pos[0], t.pos[1], t.height]} for t in self.env.scene.tables]
+        surfaces = [{"name": t.name, "pos": [round(t.pos[0], 3), round(t.pos[1], 3), t.height]}
+                    for t in self._supports()]
         for b in self.env.scene.bags:
             top, owner = self.env.surface_below(b.pos[0], b.pos[1], b.base_z + b.height + 0.02)
             surfaces.append({"name": b.name, "pos": [round(b.pos[0], 3), round(b.pos[1], 3), round(top, 3)],
                              "on": self.env.support_of_point(b.pos[0], b.pos[1], b.base_z), "soft": True})
-        return SkillResult(True, data={"objects": out, "surfaces": surfaces})
+        data = {"objects": out, "surfaces": surfaces}
+        if unseen:
+            data["not_visible"] = f"{', '.join(unseen)} closed: open_door to see inside"
+        return SkillResult(True, data=data)
 
     @skill
     def list_locations(self) -> SkillResult:
@@ -202,6 +212,126 @@ class SkillLibrary:
         env.set_ego_pitch(pitch)
         env.step()
         return SkillResult(True, data={"yaw": round(yaw, 3), "camera_pitch": round(pitch, 3)})
+
+    # ================================================================ fixtures
+    @skill
+    def open_door(self, fridge: str, timeout_s: float = 20.0) -> SkillResult:
+        """Touch the handle, step back out of the door's swing, swing it open, step back in.
+
+        PLACEHOLDER: the hand only touches the handle; the door itself is swung
+        kinematically (no pulling force, no contact while it moves).
+        """
+        env = self.env
+        f = env.fridge(fridge)
+        if f is None:
+            return SkillResult(False, f"unknown_target: {fridge}; fridges={[g.name for g in env.scene.fridges]}")
+        if env.door_is_open(fridge):
+            return SkillResult(True, data={"door": "open", "already": True})
+        free = [s for s in SIDES if s not in {s_ for s_, *_ in env.attached.values()}]
+        if not free:
+            return SkillResult(False, "hand_full: both hands are full; a hand is needed for the handle")
+        stance = f.stance(self.FRIDGE_STANDOFF)
+        x, y, _ = env.base_pose()
+        if np.hypot(stance[0] - x, stance[1] - y) > 1.0:
+            return SkillResult(False, f"too_far: {fridge} is out of reach; go_to_location {fridge} first")
+        r = self._walk_to(*stance, timeout_s)
+        if not r.success:
+            return r
+        # The handle is on the robot's left (hinge on the right): prefer the left hand.
+        side = "left" if "left" in free else free[0]
+        hid = mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_SITE, f"{fridge}_handle")
+        handle = env.data.site_xpos[hid].copy()
+        grip = handle - 0.05 * self._fwd()
+        r = self._align_for(grip, side)  # side-steps over when only the far hand is free
+        if r.success:
+            r = self._reach(side, grip, tol=0.05)
+        if not r.success:
+            self._retract(side)
+            return SkillResult(False, f"handle_{r.reason}", r.data)
+        env.hand_target[side] = self._closed_hand(side)
+        env.step(10)
+        env.hand_target[side] = env.stand_ctrl[env.hand_act[side]].copy()
+        self._retract(side)
+        r = self._swing(f, f.open_angle, stance, timeout_s)
+        if not r.success:
+            return r
+        return SkillResult(True, data={"door": "open", "hand": side})
+
+    @skill
+    def close_door(self, fridge: str, timeout_s: float = 20.0) -> SkillResult:
+        """Step back out of the door's swing and swing it shut. PLACEHOLDER: kinematic swing."""
+        env = self.env
+        f = env.fridge(fridge)
+        if f is None:
+            return SkillResult(False, f"unknown_target: {fridge}; fridges={[g.name for g in env.scene.fridges]}")
+        if env.door_angle[fridge] < 0.05:
+            return SkillResult(True, data={"door": "closed", "already": True})
+        x, y, _ = env.base_pose()
+        back = f.stance(self._door_clearance(f))
+        if np.hypot(back[0] - x, back[1] - y) > 1.5:
+            return SkillResult(False, f"too_far: {fridge} is out of reach; go_to_location {fridge} first")
+        for s_ in SIDES:  # an arm left inside would be hit by the door
+            if not any(s == s_ for s, *_ in env.attached.values()):
+                self._retract(s_)
+        r = self._swing(f, 0.0, None, timeout_s)
+        if not r.success:
+            return r
+        return SkillResult(True, data={"door": "closed"})
+
+    FRIDGE_STANDOFF = 0.16  # base to door face when working at a fridge (m)
+
+    def _door_clearance(self, f) -> float:
+        """Standoff that keeps the base ~0.25m outside the door's swing radius."""
+        w = 2 * f.size[1]
+        return float(np.sqrt((w + 0.25) ** 2 - f.size[1] ** 2)) - f.door_thick / 2
+
+    def _swing(self, f, angle: float, then, timeout_s: float, duration: float = 1.5) -> SkillResult:
+        """Back out of the swing, move the door to `angle`, then walk to pose `then` (if given)."""
+        env = self.env
+        back = f.stance(self._door_clearance(f))
+        r = self._walk_to(*back, timeout_s)
+        if not r.success:
+            return SkillResult(False, f"backup_{r.reason}", r.data)
+        a0, n = env.door_angle[f.name], max(1, int(duration / env.control_dt))
+        for i in range(1, n + 1):
+            u = i / n
+            env.door_angle[f.name] = a0 + (angle - a0) * (3 * u * u - 2 * u ** 3)
+            env.step()
+        env.step(10)
+        if then is not None:
+            r = self._walk_to(*then, timeout_s)
+            if not r.success:
+                return r
+        return SkillResult(True)
+
+    def _fwd(self) -> np.ndarray:
+        _, _, yaw = self.env.base_pose()
+        return np.array([np.cos(yaw), np.sin(yaw), 0.0])
+
+    def _outside(self, side: str, p: np.ndarray, fwd: float = 0.10) -> SkillResult:
+        """Move the palm to p's height and lateral offset, but only `fwd` ahead of the base.
+
+        Entering or leaving a fridge on that waypoint keeps the hand from sweeping
+        diagonally through the shelf edge above or below.
+        """
+        x, y, yaw = self.env.base_pose()
+        lat = -np.sin(yaw) * (p[0] - x) + np.cos(yaw) * (p[1] - y)
+        return self._reach(side, self._body_to_world(fwd, lat, float(p[2])), tol=0.04)
+
+    def _half(self, obj: str) -> float:
+        return next(o.half_size for o in self.env.scene.objects if o.name == obj)
+
+    def _supports(self) -> list:
+        return self.env.scene.tables + [t for f in self.env.scene.fridges for t in f.shelf_tables()]
+
+    def _obstacles(self) -> list:
+        """Footprints the base must route around: tables, fridges, and any open door."""
+        out = list(self.env.scene.tables)
+        for f in self.env.scene.fridges:
+            out.append(f.footprint)
+            if self.env.door_angle[f.name] > 0.05:
+                out.append(f.door_footprint(self.env.door_angle[f.name]))
+        return out
 
     # ================================================================ talking to people
     @skill
@@ -323,6 +453,9 @@ class SkillLibrary:
         if obj not in env.object_names:
             return SkillResult(False, f"unknown_object: {obj}")
         p = env.object_pos(obj)
+        fridge = env.fridge_of(env.support_of(obj))
+        if fridge is not None and not env.door_is_open(fridge.name):
+            return SkillResult(False, f"door_closed: {obj} is inside {fridge.name}; open_door {fridge.name} first")
         if len({s for s, *_ in env.attached.values()}) == len(SIDES):
             return SkillResult(False, "hand_full: both hands are holding something; place one first")
         if side is None:
@@ -334,16 +467,29 @@ class SkillLibrary:
         a = self._align_for(p, side)
         if not a.success:
             return a
-        r = self._reach(side, p + [0, 0, 0.10], tol=0.05)
+        # Clearances scale with object height (identical to the old fixed ones for 5cm cubes).
+        half = self._half(obj)
+        above = p + [0, 0, half + 0.075]
+        if fridge is not None:
+            r = self._outside(side, above)
+            if not r.success:
+                return SkillResult(False, f"approach_{r.reason}", r.data)
+        r = self._reach(side, above, tol=0.05)
         if not r.success:
             return SkillResult(False, f"approach_{r.reason}", r.data)
-        r = self._reach(side, p + [0, 0, 0.045])  # palm just above the object; grasp is magic
+        r = self._reach(side, p + [0, 0, half + 0.02])  # palm just above the object; grasp is magic
         if not r.success:
             return SkillResult(False, f"descend_{r.reason}", r.data)
-        g = SkillLibrary.grasp.__wrapped__(self, side, obj)
+        g = SkillLibrary.grasp.__wrapped__(self, side, obj, max(0.08, half + 0.06))
         if not g.success:
             return g
-        lift = self._reach(side, env.palm_pos(side) + [0, 0, 0.12])
+        # Inside a fridge the shelf above caps the lift; pull straight out before raising to carry.
+        lift = self._reach(side, env.palm_pos(side) + [0, 0, 0.12 if fridge is None else 0.06])
+        if fridge is not None:
+            self._outside(side, env.palm_pos(side))
+            # Fingers hang below the palm and catch the shelf edge on the way to carry height.
+            _, _, yaw = env.base_pose()
+            self._step_to(*self._body_to_world(-0.12, 0.0, 0.0)[:2], yaw)
         carry = self._reach(side, self._carry_point(side, self.CARRY_Z))
         return SkillResult(True, data={"holding": obj, "side": side,
                                        "lifted": lift.success, "in_carry_pose": carry.success})
@@ -374,14 +520,18 @@ class SkillLibrary:
         if side not in held:
             return SkillResult(False, f"not_holding: {side} hand is empty")
         obj = held[side]
-        table = next((t for t in env.scene.tables if t.name == surface), None)
+        table = next((t for t in self._supports() if t.name == surface), None)
+        fridge = env.fridge_of(surface)
+        if fridge is not None and not env.door_is_open(fridge.name):
+            return SkillResult(False, f"door_closed: {surface} is inside {fridge.name}; open_door {fridge.name} first")
         bag = next((b for b in env.scene.bags if b.name == surface), None)
         x, y, _ = env.base_pose()
         if table is not None:
             gap = np.hypot(max(abs(x - table.pos[0]) - table.size[0], 0), max(abs(y - table.pos[1]) - table.size[1], 0))
             if gap > 0.5:
                 return SkillResult(False, f"too_far: {surface} is {gap:.2f}m away; go_to_location {surface} first")
-            spot = self._free_spot(table, obj, side, dx, dy)
+            # Fridge side walls: the wrist and elbow flare outboard of the object.
+            spot = self._free_spot(table, obj, side, dx, dy, margin=0.06 if fridge is None else 0.09)
             if spot is None:
                 return SkillResult(False, f"no_free_space: no clear reachable spot on {surface}; "
                                           f"reposition or clear the table")
@@ -398,22 +548,31 @@ class SkillLibrary:
             if np.hypot(spot[0] - x, spot[1] - y) > self.REACH_FWD + 0.5:
                 return SkillResult(False, f"too_far: {surface} is out of reach; walk to it first")
         else:
-            return SkillResult(False, f"unknown_surface: {surface}; use a table, bag or object name")
-        half = next(o.half_size for o in env.scene.objects if o.name == obj)
-        top, hit = env.surface_below(spot[0], spot[1], exclude=obj, half=half)
+            return SkillResult(False, f"unknown_surface: {surface}; use a table, fridge shelf, bag or object name")
+        half = self._half(obj)
+        # Cast from just above a table-like surface: from 2m a fridge shelf is under the roof.
+        top, hit = env.surface_below(spot[0], spot[1], z=2.0 if table is None else table.height + 0.05,
+                                     exclude=obj, half=half)
         if table is None and hit != surface:
             return SkillResult(False, f"no_support: the spot above {surface} is over {hit}; use dx/dy closer to its centre",
                                {"spot": [round(float(v), 3) for v in spot]})
         # Side-stepping sweeps the carried objects (and fingers ~8cm below the palm)
         # sideways: lift them clear of a tall support or stack first.
         for s_, o in held.items():
-            self._reach(s_, self._carry_point(s_, max(self.CARRY_Z, top + 0.17)))
+            if fridge is None:
+                self._reach(s_, self._carry_point(s_, max(self.CARRY_Z, top + 0.17)))
+            else:  # at a fridge the carry pose is level with the top shelf's front edge: pull back
+                self._outside(s_, env.palm_pos(s_))
         a = self._align_for(np.array([spot[0], spot[1], top]), side)
         if not a.success:
             return a
         # Palm target such that the held object's centre ends up just above the surface.
         palm_minus_obj = env.palm_pos(side) - env.object_pos(obj)
         target = np.array([spot[0], spot[1], top + half + 0.01]) + palm_minus_obj
+        if fridge is not None:
+            r = self._outside(side, target + [0, 0, 0.10])
+            if not r.success:
+                return SkillResult(False, f"approach_{r.reason}", r.data)
         r = self._reach(side, target + [0, 0, 0.10], tol=0.05)
         if not r.success:
             return SkillResult(False, f"approach_{r.reason}", r.data)
@@ -456,7 +615,7 @@ class SkillLibrary:
         a, b = np.asarray(a, float), np.asarray(b, float)
         n = max(2, int(np.linalg.norm(b - a) / 0.02))
         pts = [a + (b - a) * (i / n) for i in range(1, n + 1)]
-        for t in self.env.scene.tables:
+        for t in self._obstacles():
             margin = 0.0 if self._in_table(t, a, self.BODY_RADIUS) else self.BODY_RADIUS
             if any(self._in_table(t, p, margin) for p in pts):
                 return t
@@ -466,7 +625,7 @@ class SkillLibrary:
         """Shortest waypoint list a->b through table corners (visibility graph), or None."""
         nodes = [np.asarray(a, float), np.asarray(b, float)] + [
             np.array([t.pos[0] + sx * (t.size[0] + clearance), t.pos[1] + sy * (t.size[1] + clearance)])
-            for t in self.env.scene.tables for sx in (-1, 1) for sy in (-1, 1)]
+            for t in self._obstacles() for sx in (-1, 1) for sy in (-1, 1)]
         dist, prev, todo = {0: 0.0}, {}, set(range(len(nodes)))
         while todo:
             i = min((j for j in todo if j in dist), key=dist.get, default=None)
@@ -494,8 +653,11 @@ class SkillLibrary:
         in the body frame. Candidates are scored by distance to that spot.
         """
         lat_sign = 1.0 if side == "left" else -1.0
+        # By release the wrist has rolled so the hand sits ~5cm inboard of the object.
+        palm_off = self._body_to_world(0.0, -lat_sign * 0.05, 0.0)[:2] - self._body_to_world(0.0, 0.0, 0.0)[:2]
         pref = self._body_to_world(self.REACH_FWD + dx, lat_sign * self.REACH_LAT + dy, 0.0)[:2]
-        others = [self.env.object_pos(o)[:2] for o in self.env.object_names if o != obj]
+        others = [self.env.object_pos(o)[:2] for o in self.env.object_names
+                  if o != obj and abs(self.env.object_pos(o)[2] - table.height) < 0.3]
         best, best_d = None, np.inf
         for gx in np.arange(-table.size[0] + margin, table.size[0] - margin + 1e-6, 0.03):
             for gy in np.arange(-table.size[1] + margin, table.size[1] - margin + 1e-6, 0.03):
@@ -504,6 +666,10 @@ class SkillLibrary:
                 if d > max_shift or d >= best_d:
                     continue
                 if any(np.linalg.norm(q - o) < clearance for o in others):
+                    continue
+                # Opening fingers sweep the inboard side: keep that clear too (they knocked a
+                # neighbour over on a crowded fridge shelf).
+                if any(np.linalg.norm(q + palm_off - o) < clearance - 0.01 for o in others):
                     continue
                 best, best_d = q, d
         return best
@@ -530,7 +696,7 @@ class SkillLibrary:
             return SkillResult(True)
         if np.hypot(bx - x, by - y) > 0.5:
             return SkillResult(False, "too_far: target is more than 0.5m from a reachable stance; walk closer first")
-        if any(self._in_table(t, (bx, by), self.STANCE_MARGIN) for t in self.env.scene.tables):
+        if any(self._in_table(t, (bx, by), self.STANCE_MARGIN) for t in self._obstacles()):
             # The kinematic base would drive the legs into the table and wreck the arm.
             return SkillResult(False, "too_far: target is too deep into the table to reach from its edge")
         r = self._step_to(bx, by, yaw)

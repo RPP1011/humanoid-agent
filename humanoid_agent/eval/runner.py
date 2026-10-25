@@ -27,7 +27,8 @@ from ..tools.registry import call_tool
 from .tasks import TASKS, TASKS_BY_ID, Episode, Task
 
 PLANNER_CODES = {"unknown_tool", "bad_args", "unknown_object", "unknown_location", "unknown_target",
-                 "unknown_surface", "not_holding", "hand_full", "budget", "no_supervisor", "no_support"}
+                 "unknown_surface", "not_holding", "hand_full", "budget", "no_supervisor", "no_support",
+                 "door_closed"}
 
 
 def _jittered(task: Task, seed: int, jitter: float):
