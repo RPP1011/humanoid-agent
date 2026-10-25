@@ -71,11 +71,12 @@ class ScriptedAgent:
     def run(self, task_id: str, prompt: str, call: ToolCaller) -> None:
         for tool, args in PLANS.get(task_id, []):
             res = call(tool, args)
-            # A person in the way is not a plan error: wait for them and retry (bounded).
+            # A person in the way or a slipped grasp is not a plan error: retry (bounded).
             for _ in range(5):
-                if res.success or not res.code.endswith("blocked_by_person"):
+                if res.success or not (res.code.endswith("blocked_by_person") or res.code == "grasp_slip"):
                     break
-                call("wait", {"seconds": 2.0})
+                if res.code.endswith("blocked_by_person"):
+                    call("wait", {"seconds": 2.0})
                 res = call(tool, args)
             if not res.success:
                 call("finish", {"answer": f"scripted plan failed at {tool}: {res.reason}"})

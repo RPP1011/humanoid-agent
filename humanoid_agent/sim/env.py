@@ -345,6 +345,12 @@ class HumanoidEnv:
         self._renderer.update_scene(self.data, camera=camera)
         return self._renderer.render()
 
+    def close(self) -> None:
+        """Free the GL context. A server running many episodes ran out of memory without this."""
+        if self._renderer is not None:
+            self._renderer.close()
+            self._renderer = None
+
     def set_ego_pitch(self, pitch: float) -> None:
         """Tilt the ego camera (positive = look down). Radians, clamped."""
         pitch = float(np.clip(pitch, -0.3, 1.2))

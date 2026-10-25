@@ -33,7 +33,7 @@ pip install -e ".[dev]"                      # add ,anthropic / ,openai / ,polic
 # Rendering backend MUST work before anything imports sim/env.py.
 #   GPU: MUJOCO_GL=egl (env.py defaults to this if unset)
 #   CPU: MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa   (apt: libosmesa6)
-MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa pytest -q            # 27 tests, ~70 s
+MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa pytest -q            # 33 tests, ~150 s on CPU
 python -m humanoid_agent.eval.runner --agent scripted --seeds 5  # harness check
 python -m humanoid_agent.server.mcp_server                        # MCP over stdio
 ```
@@ -59,7 +59,8 @@ code: switch to osmesa and install `libosmesa6`.
    (`KinematicGlide`) and grasping (`env.attach`) are faked; the bean bag is an
    approximation (sprung cell bed, not a deformable); the walking person is a
    capsule mannequin on a scripted path with no collision geometry. `is_physical=False`
-   flows into every eval row and summary. Any new fake must do the same.
+   flows into every eval row and summary. Any new fake must do the same (the
+   difficulty switches do: `faults_injected` and `perception` are in every row).
 6. **The LLM never emits joint targets or velocities.** Keep composite skills
    (`pick`, `place_on`) available; low-level ones (`reach`, `grasp`) are extras.
 
@@ -86,6 +87,7 @@ code: switch to osmesa and install `libosmesa6`.
 | New kind of support (bag, shelf) | `sim/scene.py` + its geoms in `env._support_name` | `place_on` branch in `skills/library.py`; see `sim/AGENTS.md` (Supports) |
 | Real walking policy | `control/locomotion.py:PolicyLocomotion` | expect `pick`/`place_on` regressions; see `control/AGENTS.md` |
 | Real grasping | `sim/env.py:attach` + `skills/library.py:grasp` | `pick` descent offsets |
+| New difficulty switch | a field on `skills/difficulty.py:Difficulty` + where it acts (skill, scene in `eval/runner.py:_jittered`) | a test in `tests/test_difficulty.py`; never change task checks |
 | New LLM backend | `agents/llm.py` | `eval/runner.py:make_agent` |
 
 ## Outputs

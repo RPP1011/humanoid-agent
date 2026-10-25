@@ -36,10 +36,11 @@ TOOLS: list[ToolSpec] = [
     ToolSpec("get_state", "Robot base pose (x, y metres; yaw radians), what each hand holds, sim time, "
                           "and whether each fridge door is open.",
              {}, [], lambda L: L.get_state()),
-    ToolSpec("list_objects", "All objects with world position, what they rest on (a table, the bean bag, another "
+    ToolSpec("list_objects", "Objects with world position, what they rest on (a table, the bean bag, another "
                              "object, floor), tilt from upright in degrees, distance from robot, and holder; plus the "
-                             "surfaces things can be placed on (tables, bean bag), and any people walking around "
-                             "(position, velocity in m/s, distance).",
+                             "surfaces things can be placed on (tables with half extents, bean bag), and any people "
+                             "walking around (position, velocity in m/s, distance). If the result has a 'perception' "
+                             "note, it lists only what the robot's camera has seen so far.",
              {}, [], lambda L: L.list_objects()),
     ToolSpec("list_locations", "Named places the robot can go to with go_to_location.",
              {}, [], lambda L: L.list_locations()),
@@ -60,6 +61,9 @@ TOOLS: list[ToolSpec] = [
              {"yaw": _num("radians")}, ["yaw"], lambda L, yaw: L.turn_to(yaw)),
     ToolSpec("look_at", "Face an object or named location and tilt the head camera toward it.",
              {"target": {"type": "string"}}, ["target"], lambda L, target: L.look_at(target)),
+    ToolSpec("look_around", "Turn in place through a full circle, looking in four directions, and end facing the "
+                            "original heading. Returns what the camera saw.",
+             {}, [], lambda L: L.look_around()),
     ToolSpec("pick", "Pick up an object within arm's reach (stand at the table first). Side auto-chosen if omitted.",
              {"obj": {"type": "string"}, "side": SIDE}, ["obj"],
              lambda L, obj, side=None: L.pick(obj, side)),

@@ -32,7 +32,8 @@ held), `_at(location, tol=0.1)`, `_undisturbed(tol=0.02)`, `_answer_has(*words)`
 Collaboration tasks set `Task.supervisor = (seed) -> Supervisor`. Their scripted plans
 only cover seed 0, since a fixed plan cannot react to what is said. The one reaction
 `ScriptedAgent` does have: on `blocked_by_person` it calls `wait(2)` and retries the
-step (up to 5 times), so `milk_to_table_busy`'s fixed plan passes on every seed.
+step (up to 5 times), so `milk_to_table_busy`'s fixed plan passes on every seed; it
+retries `grasp_slip` the same way. Fixed plans pass under `camera` but not `deep`.
 
 Adding a task: append to `TASKS`, give it a plan in `agents/scripted.py`
 (the smoke test runs every task), and keep the check on state. Answer checks
@@ -41,7 +42,16 @@ are substring matches; be aware they are lenient (see below).
 ## runner.py
 
 `python -m humanoid_agent.eval.runner --agent {scripted,anthropic,openai} [--model M]
-[--base-url URL] [--no-images] [--tasks id ...] [--seeds N] [--jitter 0.03] [--out runs]`
+[--base-url URL] [--no-images] [--tasks id ...] [--seeds N] [--jitter 0.03] [--out runs]
+[--difficulty none slip deep camera slip,camera all ...]`
+
+- `--difficulty` sweeps each listed switch setting over every task and seed
+  (`skills/difficulty.py`). `deep` is applied here, in `_jittered` → `_push_deep`:
+  one of `Task.targets` that rests on a table with a same-named location is moved
+  (seeded choice) to 7 cm from that table's far edge, so it is `too_far` from the
+  usual stance and reachable from the opposite side (`half_size` in `list_objects`
+  surfaces lets a planner work out where that is). Tasks without table targets are
+  unaffected. Checks never change with difficulty.
 
 - `run_episode` builds a fresh `HumanoidEnv` per episode. Seed 0 is the
   canonical layout; seeds > 0 jitter every object's xy uniformly by ±`jitter` m
@@ -57,14 +67,22 @@ are substring matches; be aware they are lenient (see below).
   answer; call number `max_tool_calls + 1` logs `budget` and ends the episode.
 - Agent crashes become `error` in the row (episode fails), not harness crashes.
 - Rows: task, seed, agent, success, `checks` (per-condition), tool_calls, sim/wall time, answer, error,
-  `locomotion_is_physical`, `skill_failures` (codes), full `log` (minus data);
+  `locomotion_is_physical`, `difficulty` (label, e.g. `slip+camera`), `faults_injected`,
+  `perception` (`ground_truth` or `camera_sim`), `skill_failures` (codes), full `log` (minus data);
   scenes with people add `person_contacts`, `min_person_dist_m`, `people_is_physical`.
-- `summarize` → per-task success table, failure codes split by
+- `summarize` → per task × difficulty success table (plus a per-difficulty table when several ran),
+  `INJECTED_CODES` (`grasp_slip`) listed apart, failure codes split by
   `PLANNER_CODES` (planner) vs everything else (skills/sim), with `WORLD_CODES`
   (`blocked_by_person`, also when prefixed) listed apart as world events, and a warning line
   when locomotion is the placeholder.
 
 ## Caveats when reading results
+- Known skill issues (2026-10-25): the scripted `swap` plan fails seeds 3 and 4 on main
+  (`place_on table_a` picks a spot whose stance is too deep into the table), and picking
+  from a table's far side (the `deep` switch) can knock or flip a cube already standing
+  near the usual side. Neither is a planner error.
+- Under `camera`, `list_objects` positions can be stale: a cube knocked off out of view
+  is still listed where it was, so a planner can honestly believe a task is done.
 - Attribution is by code only. `too_far` (didn't walk close enough) is
   arguably a planner error but counts as skill/sim; `unreachable` is ambiguous.
 - `which_on_b` passes for any answer containing "green" (including "red, blue,

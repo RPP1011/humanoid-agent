@@ -15,7 +15,7 @@ splits them into planner vs skill errors using `eval/runner.py:PLANNER_CODES`,
 so **codes are an API**: don't rename them casually, and add new
 planner-caused codes to that set.
 
-Current codes: `ok`, `fallen`, `bad_args`, `unknown_location`, `unknown_target`,
+Current codes: `ok`, `grasp_slip` (injected, see Difficulty switches), `not_seen` (camera mode, planner-caused), `fallen`, `bad_args`, `unknown_location`, `unknown_target`,
 `unknown_object`, `unknown_surface`, `unreachable`, `tracking`, `too_far`,
 `hand_full`, `not_holding`, `door_closed`, `retract_blocked`, `no_free_space`, `no_support`, `placement`,
 `timeout`, `blocked_by_person` (a world event, counted separately by the runner: `WORLD_CODES`); composites prefix sub-step failures: `approach_*`, `descend_*`,
@@ -41,7 +41,7 @@ so the sub-call is not logged as a separate planner action. Internal helpers
 
 | Group | Skills | Notes |
 |---|---|---|
-| Query | `get_state`, `list_objects`, `list_locations`, `get_frame` | `list_objects` is ground-truth perception (with `on`, `tilt_deg`, and a `surfaces` list of tables and bags); `get_frame` returns PNG bytes under `data["png_bytes"]` |
+| Query | `get_state`, `list_objects`, `list_locations`, `get_frame`, `look_around` | `list_objects` is ground-truth perception unless the camera switch is on (with `on`, `tilt_deg`, and a `surfaces` list of tables with `half_size`, and bags); `get_frame` returns PNG bytes under `data["png_bytes"]` |
 | Locomotion | `go_to_location`, `walk_to`, `turn_to`, `look_at` | `_walk_to`: turn-then-drive P-controller, 2 cm / 0.05 rad tolerance; a straight line that would enter a table (10 cm keep-out) is routed via table corners (`_route`, visibility graph) or refused `blocked_path`; yaw > 2π is `bad_args` |
 | Primitives | `reach`, `grasp`, `release`, `retract` | `grasp` = magic attach if object within 8 cm of palm |
 | Composites | `pick`, `place_on` | what planners should normally use |
@@ -112,6 +112,29 @@ streams IK waypoints every 2 cm at control rate, because straight joint-space
 moves sweep through table tops. `_retract` lifts, pulls back behind the table
 edge, lowers beside the hip, then snaps to rest, because going straight to the
 rest pose knocks objects off the table.
+
+## Difficulty switches (`difficulty.py`, `perception.py`)
+
+`SkillLibrary(env, difficulty=Difficulty.parse("slip,camera"), seed=s)`. Off by default.
+
+- **slip**: `grasp` (and so `pick`) fails with `grasp_slip` after the descent, fingers
+  left open so the object is not shoved (closing them on an unattached object pushed it
+  ~20 cm). The episode's first grasp always slips, later ones with p=`slip`
+  (`random.Random(7919*seed+1)`, deterministic for replay). `pick` backs the arm out and
+  retracts before returning. Each fault is appended to `lib.faults`. INJECTED, not physics.
+- **camera**: `self.memory = CameraMemory`. The `@skill` wrapper calls `observe()` before
+  and after every skill (newly seen names go in `data["newly_seen"]`). Seen = centre or top
+  inside the ego camera's FOV, < 4 m, and the first group-0 geom on the ray is the
+  object; position noise 5 mm + 1 cm/m. Held objects are always known. `list_objects`
+  returns beliefs (`in_view`, `last_seen_s_ago`) plus a `perception` note; every closed
+  fridge is listed as `not_visible` whether or not it has contents. `pick`, `grasp`,
+  `look_at` and `place_on` (onto an object) return `not_seen` for unseen names, checked
+  **before** existence, so a made-up name and an unseen real one look the same.
+  `wait` and `list_objects` report only people in view; `_person_blocking` still uses
+  ground truth (treat it as a proximity safety sensor), as does `_free_spot` (close-range
+  placement perception). `look_around` turns through four headings at the default
+  camera pitch. SIMULATED DETECTOR, not a vision model.
+- **deep** acts on the scene, not on skills: see `eval/AGENTS.md`.
 
 ## Rules for new skills
 
