@@ -27,9 +27,12 @@ held), `_at(location, tol=0.1)`, `_undisturbed(tol=0.02)`, `_answer_has(*words)`
 | `revised_order` | supervisor changes the order mid-task (on pick for even seeds, at table_b for odd) | red on table_a, blue and green on table_b |
 | `clarify_which` | ambiguous order; supervisor's choice alternates by seed | the wanted cube on table_b, the other still on table_a |
 | `bean_bag_tower` | stacking on a soft, lumpy support (two trips: three cubes, two hands) | a 3-cube tower on `bean_bag`, upright after 5 s settle |
+| `milk_to_table_busy` | counter → kitchen_table while a scripted person paces across the route (start point seeded); prompt never mentions them | milk on kitchen_table, zero robot-person contacts, nothing else moved |
 
 Collaboration tasks set `Task.supervisor = (seed) -> Supervisor`. Their scripted plans
-only cover seed 0, since a fixed plan cannot react to what is said.
+only cover seed 0, since a fixed plan cannot react to what is said. The one reaction
+`ScriptedAgent` does have: on `blocked_by_person` it calls `wait(2)` and retries the
+step (up to 5 times), so `milk_to_table_busy`'s fixed plan passes on every seed.
 
 Adding a task: append to `TASKS`, give it a plan in `agents/scripted.py`
 (the smoke test runs every task), and keep the check on state. Answer checks
@@ -44,7 +47,9 @@ are substring matches; be aware they are lenient (see below).
   canonical layout; seeds > 0 jitter every object's xy uniformly by ±`jitter` m
   with `random.Random(seed)` (deterministic) and set each bag's `lump_seed` to
   the seed, so the bean bag's lumps differ per seed (seed 4's crown is lumpy
-  enough that a centred tower falls; an offset spot works).
+  enough that a centred tower falls; an offset spot works). Every `Person`'s
+  `seed` is set to the episode seed (seed 0 included), which picks where on its
+  walking cycle it starts.
 - `scripts/episode_server.py` runs the same `run_episode` behind a localhost
   HTTP bridge so a planner that is not a Python object (a Claude Code subagent
   with no API key) can drive it one CLI call at a time; `--video` writes an mp4.
@@ -52,9 +57,11 @@ are substring matches; be aware they are lenient (see below).
   answer; call number `max_tool_calls + 1` logs `budget` and ends the episode.
 - Agent crashes become `error` in the row (episode fails), not harness crashes.
 - Rows: task, seed, agent, success, `checks` (per-condition), tool_calls, sim/wall time, answer, error,
-  `locomotion_is_physical`, `skill_failures` (codes), full `log` (minus data).
+  `locomotion_is_physical`, `skill_failures` (codes), full `log` (minus data);
+  scenes with people add `person_contacts`, `min_person_dist_m`, `people_is_physical`.
 - `summarize` → per-task success table, failure codes split by
-  `PLANNER_CODES` (planner) vs everything else (skills/sim), and a warning line
+  `PLANNER_CODES` (planner) vs everything else (skills/sim), with `WORLD_CODES`
+  (`blocked_by_person`, also when prefixed) listed apart as world events, and a warning line
   when locomotion is the placeholder.
 
 ## Caveats when reading results

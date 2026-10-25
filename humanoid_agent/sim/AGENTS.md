@@ -104,6 +104,23 @@ Thin wrapper around `MjModel`/`MjData` that skills drive.
   footprints; anything else that commands the base (`_step_to`, a new skill)
   must not drive into a table either.
 
+## person.py
+
+`Person` (spec, on `SceneSpec.people`) + `Walker` (runtime, `env.people`). A
+**placeholder pedestrian** (`is_physical=False`): a mocap body of capsules named
+`<name>` (group 2, no contact bits, so it never collides and `surface_below` ray
+casts ignore it) that glides back and forth along `path` at `speed`, pausing
+`pause_s` at each end. It yields (stops) while the robot base is within 0.9 m
+ahead and 0.5 m of its line, and after `patience_s` of waiting turns back, so a
+parked robot can't deadlock it. `seed` picks the start point on its cycle (the
+runner sets it to the episode seed; `reset` fast-forwards to it while yielding to
+the robot's start pose). Deterministic, so `episode_server.py replay` reproduces it.
+
+`env.step` advances walkers once per control step and records contact *onsets*
+in `env.person_contacts` when base-to-person distance < `ROBOT_RADIUS` (0.2) +
+`radius` (0.25), plus `env.min_person_dist`. That is a 2D cylinder test on the
+base, not a physics contact: an arm swung into the person is not detected.
+
 ## supervisor.py
 
 `Supervisor` is a **placeholder human** (`is_physical=False`): no body, just

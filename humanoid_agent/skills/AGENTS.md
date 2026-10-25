@@ -18,7 +18,7 @@ planner-caused codes to that set.
 Current codes: `ok`, `fallen`, `bad_args`, `unknown_location`, `unknown_target`,
 `unknown_object`, `unknown_surface`, `unreachable`, `tracking`, `too_far`,
 `hand_full`, `not_holding`, `door_closed`, `retract_blocked`, `no_free_space`, `no_support`, `placement`,
-`timeout`; composites prefix sub-step failures: `approach_*`, `descend_*`,
+`timeout`, `blocked_by_person` (a world event, counted separately by the runner: `WORLD_CODES`); composites prefix sub-step failures: `approach_*`, `descend_*`,
 `align_*`, `handle_*`, `backup_*` (e.g. `approach_tracking`).
 
 ## The `@skill` decorator
@@ -46,7 +46,7 @@ so the sub-call is not logged as a separate planner action. Internal helpers
 | Primitives | `reach`, `grasp`, `release`, `retract` | `grasp` = magic attach if object within 8 cm of palm |
 | Composites | `pick`, `place_on` | what planners should normally use |
 | Fixtures | `open_door`, `close_door` | fridge doors; see below |
-| People | `ask_supervisor`, `report` | `no_supervisor` if the task has none; asking costs 2 s of sim time |
+| People | `ask_supervisor`, `report`, `wait` | `no_supervisor` if the task has none; asking costs 2 s of sim time; `wait(seconds≤10)` stands still and returns where people are |
 
 When `env.supervisor` is set (see `sim/supervisor.py`), the `@skill` wrapper ticks it after
 every skill and attaches anything it said to that result as `data["supervisor_says"]`.
@@ -94,6 +94,17 @@ enter and leave through a waypoint 10 cm ahead of the base at the target height
 steps back 12 cm before raising to carry height. On fridge shelves `_free_spot`
 keeps 9 cm from the side walls, and on every surface it keeps the inboard side of
 the spot (where the opening fingers sweep) clear of other objects.
+
+### People in the way (`_person_blocking`)
+Every control step that translates the base (`_walk_to` driving forward, `_step_to`
+side-steps, so `pick`/`place_on`/doors too) checks each `env.people` walker: stop if
+one is within `PERSON_STOP` = 0.9 m inside a ±60° cone of the motion direction, or
+within `PERSON_LOOK` = 1.2 m with a predicted closest approach over the next second
+under `PERSON_PASS` = 0.6 m. The skill then returns `blocked_by_person` (composites
+prefix it: `align_blocked_by_person`, `backup_...`) with the person's position and
+velocity. It does **not** wait or replan itself: reacting is deliberately left to
+the planner (`wait`, a detour via `walk_to`, or giving up). Turning in place is
+never blocked. Positions are ground truth, like `list_objects`.
 
 ### Why `_reach` and `_retract` look the way they do
 `_reach` lifts to target height near the body before moving horizontally, and

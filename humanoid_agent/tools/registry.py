@@ -38,18 +38,24 @@ TOOLS: list[ToolSpec] = [
              {}, [], lambda L: L.get_state()),
     ToolSpec("list_objects", "All objects with world position, what they rest on (a table, the bean bag, another "
                              "object, floor), tilt from upright in degrees, distance from robot, and holder; plus the "
-                             "surfaces things can be placed on (tables, bean bag).",
+                             "surfaces things can be placed on (tables, bean bag), and any people walking around "
+                             "(position, velocity in m/s, distance).",
              {}, [], lambda L: L.list_objects()),
     ToolSpec("list_locations", "Named places the robot can go to with go_to_location.",
              {}, [], lambda L: L.list_locations()),
     ToolSpec("get_frame", "Camera image. 'ego' is the robot's head view; 'overview' is a fixed room camera.",
              {"camera": {"type": "string", "enum": ["ego", "overview"]}}, [],
              lambda L, camera="ego": L.get_frame(camera)),
-    ToolSpec("go_to_location", "Walk to a named location and face its stored heading.",
+    ToolSpec("go_to_location", "Walk to a named location and face its stored heading. "
+                               "Stops early (blocked_by_person) if a person is in the way.",
              {"name": {"type": "string"}}, ["name"], lambda L, name: L.go_to_location(name)),
-    ToolSpec("walk_to", "Walk to world (x, y), optionally ending at heading yaw (radians). Routes around tables.",
+    ToolSpec("walk_to", "Walk to world (x, y), optionally ending at heading yaw (radians). Routes around tables. "
+                         "Stops early (blocked_by_person) if a person is in the way.",
              {"x": _num("metres"), "y": _num("metres"), "yaw": _num("radians, optional")}, ["x", "y"],
              lambda L, x, y, yaw=None: L.walk_to(x, y, yaw)),
+    ToolSpec("wait", "Stand still for a few seconds (max 10) and let the world move, e.g. until a person has "
+                     "walked past. Returns where people are afterwards.",
+             {"seconds": _num("sim seconds, 0-10")}, ["seconds"], lambda L, seconds: L.wait(seconds)),
     ToolSpec("turn_to", "Rotate in place to heading yaw (radians).",
              {"yaw": _num("radians")}, ["yaw"], lambda L, yaw: L.turn_to(yaw)),
     ToolSpec("look_at", "Face an object or named location and tilt the head camera toward it.",

@@ -56,6 +56,10 @@ PLANS: dict[str, list[tuple[str, dict]]] = {
         ("go_to_location", {"name": "fridge"}), ("open_door", {"fridge": "fridge"}),
         ("place_on", {"surface": "fridge_top_shelf"}), ("close_door", {"fridge": "fridge"}),
     ],
+    "milk_to_table_busy": [
+        ("go_to_location", {"name": "counter"}), ("pick", {"obj": "milk"}),
+        ("go_to_location", {"name": "kitchen_table"}), ("place_on", {"surface": "kitchen_table"}),
+    ],
     "which_on_b": [("list_objects", {}), ("finish", {"answer": "green"})],
     "impossible_purple": [("list_objects", {}), ("finish", {"answer": "There is no purple cube in the room."})],
 }
@@ -67,6 +71,12 @@ class ScriptedAgent:
     def run(self, task_id: str, prompt: str, call: ToolCaller) -> None:
         for tool, args in PLANS.get(task_id, []):
             res = call(tool, args)
+            # A person in the way is not a plan error: wait for them and retry (bounded).
+            for _ in range(5):
+                if res.success or not res.code.endswith("blocked_by_person"):
+                    break
+                call("wait", {"seconds": 2.0})
+                res = call(tool, args)
             if not res.success:
                 call("finish", {"answer": f"scripted plan failed at {tool}: {res.reason}"})
                 return

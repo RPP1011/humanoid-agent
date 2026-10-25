@@ -100,6 +100,8 @@ class SkillLibrary:
             surfaces.append({"name": b.name, "pos": [round(b.pos[0], 3), round(b.pos[1], 3), round(top, 3)],
                              "on": self.env.support_of_point(b.pos[0], b.pos[1], b.base_z), "soft": True})
         data = {"objects": out, "surfaces": surfaces}
+        if self.env.people:  # ground truth, like objects: position and current velocity
+            data["people"] = [w.to_dict((x, y)) for w in self.env.people]
         if unseen:
             data["not_visible"] = f"{', '.join(unseen)} closed: open_door to see inside"
         return SkillResult(True, data=data)
@@ -174,6 +176,8 @@ class SkillLibrary:
                 herr = _wrap_angle(heading - yaw)
                 # Turn first if badly misaligned, then walk forward with heading correction.
                 vx = 0.0 if abs(herr) > 0.6 else min(0.5, 1.2 * dist)
+                if vx > 0 and (blocked := self._person_blocking((np.cos(yaw), np.sin(yaw)), vx)):
+                    return blocked
                 loco.set_command(vx, 0.0, float(np.clip(2.0 * herr, -1.0, 1.0)))
             elif gyaw is not None and abs(_wrap_angle(gyaw - yaw)) > yaw_tol:
                 loco.set_command(0.0, 0.0, float(np.clip(2.0 * _wrap_angle(gyaw - yaw), -1.0, 1.0)))
@@ -332,6 +336,55 @@ class SkillLibrary:
             if self.env.door_angle[f.name] > 0.05:
                 out.append(f.door_footprint(self.env.door_angle[f.name]))
         return out
+
+    PERSON_STOP = 0.9     # stop if a person is this close (base to body centre) in the walking cone
+    PERSON_CONE = 1.05    # rad half-angle of that cone (~60 deg)
+    PERSON_PASS = 0.6     # ...or if the predicted closest approach over the next second is below this
+    PERSON_LOOK = 1.2     # (only for people this close: farther ones are reassessed as they approach)
+
+    def _person_blocking(self, direction, speed: float) -> SkillResult | None:
+        """Stop the base for a person ahead (or about to cut across) and say where they are.
+
+        Ground-truth positions and velocities (no perception yet). Turning in place is
+        never blocked; only translation is checked.
+        """
+        env = self.env
+        if not env.people:
+            return None
+        x, y, yaw = env.base_pose()
+        u = np.asarray(direction, float)
+        u /= max(np.linalg.norm(u), 1e-9)
+        for w in env.people:
+            rel = w.pos - (x, y)
+            d = float(np.linalg.norm(rel))
+            ahead = d < self.PERSON_STOP and rel @ u > np.cos(self.PERSON_CONE) * d
+            vrel = w.vel - speed * u
+            t = float(np.clip(-(rel @ vrel) / max(vrel @ vrel, 1e-9), 0.0, 1.0))
+            crossing = (d < self.PERSON_LOOK and rel @ u > 0
+                        and float(np.linalg.norm(rel + vrel * t)) < self.PERSON_PASS)
+            if ahead or crossing:
+                env.loco.stop()
+                env.step()
+                p = w.to_dict((x, y))
+                where = "ahead" if ahead else "about to cross your path"
+                moving = "standing still" if not np.any(p["velocity"]) else f"moving {p['velocity']} m/s"
+                return SkillResult(False, f"blocked_by_person: {w.spec.name} {where} at {p['pos']}, {p['dist_m']} m "
+                                          f"away, {moving}; wait, or go around them",
+                                   {"person": p, "base": {"x": round(x, 3), "y": round(y, 3), "yaw": round(yaw, 3)}})
+        return None
+
+    # ================================================================ waiting
+    @skill
+    def wait(self, seconds: float = 2.0) -> SkillResult:
+        """Stand still for up to 10 s of sim time (people keep moving)."""
+        seconds = float(seconds)
+        if not 0 < seconds <= 10:
+            return SkillResult(False, f"bad_args: seconds must be in (0, 10], got {seconds}")
+        self.env.loco.stop()
+        self.env.step(max(1, int(round(seconds / self.env.control_dt))))
+        x, y, _ = self.env.base_pose()
+        return SkillResult(True, data={"people": [w.to_dict((x, y)) for w in self.env.people]}
+                           if self.env.people else {})
 
     # ================================================================ talking to people
     @skill
@@ -717,6 +770,8 @@ class SkillLibrary:
                 return SkillResult(True)
             c, s_ = np.cos(yaw), np.sin(yaw)
             vx, vy = c * ex + s_ * ey, -s_ * ex + c * ey
+            if np.hypot(ex, ey) > tol and (blocked := self._person_blocking((ex, ey), min(0.3, np.hypot(ex, ey)))):
+                return blocked
             loco.set_command(float(np.clip(1.5 * vx, -0.3, 0.3)), float(np.clip(1.5 * vy, -0.3, 0.3)),
                              float(np.clip(2.0 * _wrap_angle(gyaw - yaw), -0.8, 0.8)))
             env.step()

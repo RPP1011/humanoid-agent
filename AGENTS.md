@@ -33,7 +33,7 @@ pip install -e ".[dev]"                      # add ,anthropic / ,openai / ,polic
 # Rendering backend MUST work before anything imports sim/env.py.
 #   GPU: MUJOCO_GL=egl (env.py defaults to this if unset)
 #   CPU: MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa   (apt: libosmesa6)
-MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa pytest -q            # 19 tests, ~60 s
+MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa pytest -q            # 27 tests, ~70 s
 python -m humanoid_agent.eval.runner --agent scripted --seeds 5  # harness check
 python -m humanoid_agent.server.mcp_server                        # MCP over stdio
 ```
@@ -57,7 +57,8 @@ code: switch to osmesa and install `libosmesa6`.
    and refusal tasks read `finish(answer)`, and they also require nothing moved.
 5. **Placeholders are labelled, keep them labelled.** Locomotion
    (`KinematicGlide`) and grasping (`env.attach`) are faked; the bean bag is an
-   approximation (sprung cell bed, not a deformable). `is_physical=False`
+   approximation (sprung cell bed, not a deformable); the walking person is a
+   capsule mannequin on a scripted path with no collision geometry. `is_physical=False`
    flows into every eval row and summary. Any new fake must do the same.
 6. **The LLM never emits joint targets or velocities.** Keep composite skills
    (`pick`, `place_on`) available; low-level ones (`reach`, `grasp`) are extras.

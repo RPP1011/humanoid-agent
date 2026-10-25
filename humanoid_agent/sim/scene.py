@@ -11,6 +11,8 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
+from .person import Person
+
 ASSET_DIR = Path(__file__).resolve().parents[2] / "assets" / "unitree_g1"
 G1_SCENE = ASSET_DIR / "scene_with_hands.xml"
 # Collision bits. The robot keeps MuJoCo's default (1); world geoms (floor, tables,
@@ -152,6 +154,7 @@ class SceneSpec:
     objects: list[Obj] = field(default_factory=list)
     bags: list[BeanBag] = field(default_factory=list)
     fridges: list[Fridge] = field(default_factory=list)
+    people: list[Person] = field(default_factory=list)  # scripted pedestrians (sim/person.py)
     # Named navigation targets the planner can refer to (x, y, yaw).
     locations: dict[str, tuple[float, float, float]] = field(default_factory=dict)
 
@@ -231,6 +234,13 @@ def build_model(scene: SceneSpec) -> mujoco.MjModel:
             contype=WORLD_BITS, conaffinity=WORLD_BITS,
         )
 
+    for p in scene.people:
+        _add_person(spec, p)
+    if scene.people:
+        # Top-down view for videos: the overview camera is low enough that a person
+        # crossing the room hides the robot.
+        spec.worldbody.add_camera(name="topdown", pos=[0.1, 0.1, 4.2], xyaxes=[1, 0, 0, 0, 1, 0], fovy=60)
+
     for g in scene.bags:
         # Close-up for videos/debugging: from the front-right, looking down at the crown.
         target = np.array([g.pos[0], g.pos[1], g.base_z + g.height])
@@ -257,6 +267,25 @@ def build_model(scene: SceneSpec) -> mujoco.MjModel:
                        rgba=[v * 0.8 for v in g.rgba[:3]] + [1.0])
 
     return spec.compile()
+
+
+def _add_person(spec: mujoco.MjSpec, p: Person) -> None:
+    # Mocap body, moved by env each control step. Visual only (group 2, no contact bits):
+    # robot-person contact is a distance test in env, and group 2 keeps the person out of
+    # surface_below's ray casts.
+    b = spec.worldbody.add_body(name=p.name, mocap=True, pos=[*p.path[0], 0])
+    vis = dict(contype=0, conaffinity=0, group=2)
+    cap = mujoco.mjtGeom.mjGEOM_CAPSULE
+    skin, shirt, pants = [0.85, 0.65, 0.5, 1], [0.2, 0.55, 0.45, 1], [0.2, 0.22, 0.3, 1]
+    for y in (-0.09, 0.09):
+        b.add_geom(type=cap, fromto=[0, y, 0.06, 0, y, 0.85], size=[0.065, 0, 0], rgba=pants, **vis)
+    b.add_geom(name=f"{p.name}_torso", type=cap, fromto=[0, 0, 0.95, 0, 0, 1.35], size=[0.16, 0, 0],
+               rgba=shirt, **vis)
+    for y in (-0.22, 0.22):
+        b.add_geom(type=cap, fromto=[0, y, 1.42, 0.03, y, 0.9], size=[0.045, 0, 0], rgba=shirt, **vis)
+    b.add_geom(type=mujoco.mjtGeom.mjGEOM_SPHERE, pos=[0.0, 0, 1.62], size=[0.11, 0, 0], rgba=skin, **vis)
+    b.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, pos=[0.1, 0, 1.64], size=[0.02, 0.05, 0.015],
+               rgba=[0.1, 0.1, 0.1, 1], **vis)  # "eyes": shows which way it faces
 
 
 FRIDGE_WHITE = [0.93, 0.94, 0.95, 1]
