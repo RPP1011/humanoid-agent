@@ -111,6 +111,8 @@ def run_episode(agent, task: Task, seed: int, out_dir: Path, jitter: float = 0.0
 
     tag = f"{task.id}_s{seed}" + ("" if difficulty.label == "none" else f"_{difficulty.label}")
     Image.fromarray(env.render("overview")).save(out_dir / f"{tag}_final.png")
+    if not getattr(env, "frames", None):  # a video recorder still needs its renderer
+        env.close()
     return {
         "task": task.id, "seed": seed, "agent": agent.name, "success": ok, "difficulty": difficulty.label,
         "tool_calls": n_calls, "sim_time_s": round(env.time, 2), "wall_s": round(time.time() - t0, 2),
